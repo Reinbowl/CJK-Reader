@@ -228,6 +228,11 @@ function setStatus(msg, error = false) {
 const timing = (r) => `det ${r.ms.det.toFixed(0)} ms · rec ${r.ms.rec.toFixed(0)} ms · ${r.lines.length} lines · ${EP}×${THREADS} ${PRECISION}`;
 
 // ---------- modes ----------
+function setShutter(label, text) {
+  $("#shutter").setAttribute("aria-label", label);
+  $("#shutter").textContent = text;
+}
+
 async function startCamera() {
   stream = await navigator.mediaDevices.getUserMedia({
     video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 } },
@@ -246,10 +251,11 @@ async function live() {
   mode = "live";
   still.hidden = true;
   sheet.hidden = true;
-  $("#shutter").setAttribute("aria-label", "Freeze");
+  setShutter("Freeze", "");
   document.body.dataset.mode = "live";
   sizeCanvas(overlay);
   if (!stream) await startCamera();
+  else await video.play(); // resuming after a freeze, which only paused the video
   setStatus("Loading models…");
   liveLoop(++loopToken);
 }
@@ -275,7 +281,7 @@ async function readStill(src, w, h, fit) {
   mode = "still";
   loopToken++;
   document.body.dataset.mode = "still";
-  $("#shutter").setAttribute("aria-label", "Back to live camera");
+  setShutter("Back to live camera", "Live");
   const { image, map } = grab(src, w, h, STILL_MAX, fit);
   const sctx = sizeCanvas(still);
   sctx.fillStyle = "#000";

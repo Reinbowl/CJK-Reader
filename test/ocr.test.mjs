@@ -4,7 +4,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import * as ort from "onnxruntime-web";
 import { PNG } from "pngjs";
-import { runOCR } from "../docs/ocr-core.js";
+import { detBoxes, runOCR } from "../docs/ocr-core.js";
 
 const root = new URL("../", import.meta.url);
 const precision = process.argv[2] ?? "int8";
@@ -34,6 +34,16 @@ function cer(a, b) {
 }
 
 let failed = false;
+
+// Camera noise: isolated pixels and 1-px lines above threshold must be skipped, not crash.
+{
+  const w = 64, h = 32, prob = new Float32Array(w * h);
+  prob[10 * w + 20] = 0.9;
+  prob.fill(0.9, 20 * w + 5, 20 * w + 15);
+  const boxes = detBoxes(prob, w, h, 1, 1);
+  console.log(`noise blobs -> ${boxes.length} boxes`);
+  if (boxes.length) failed = true;
+}
 for (const [name, t] of Object.entries(truth)) {
   const png = PNG.sync.read(readFileSync(new URL(`test/images/${name}.png`, root)));
   const img = { data: png.data, width: png.width, height: png.height };

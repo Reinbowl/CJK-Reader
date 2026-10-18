@@ -78,7 +78,7 @@ function convexHull(pts) {
 function minAreaRect(hull) {
   let best = null;
   const n = hull.length;
-  for (let i = 0; i < Math.max(n, 1); i++) {
+  for (let i = 0; i < n; i++) {
     const a = hull[i], b = hull[(i + 1) % n];
     let ux = b[0] - a[0], uy = b[1] - a[1];
     const len = Math.hypot(ux, uy);
@@ -156,7 +156,9 @@ export function detBoxes(prob, w, h, sx, sy, { thresh = 0.3, boxThresh = 0.6, un
     }
     const pts = [];
     for (const [y, x] of rowMin) { pts.push([x, y]); if (rowMax.get(y) !== x) pts.push([rowMax.get(y), y]); }
-    const r = minAreaRect(convexHull(pts));
+    const hull = convexHull(pts);
+    if (hull.length < 3) continue; // single pixel or a 1-px line: camera noise, no area
+    const r = minAreaRect(hull);
     if (Math.min(r.w, r.h) < 3) continue;
     if (rectScore(prob, w, h, r) < boxThresh) continue;
     // "Unclip": grow the shrunk text kernel back out, as PaddleOCR does with a polygon offset.
