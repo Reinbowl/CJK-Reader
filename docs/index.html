@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="CJK Reader">
+  <meta name="description" content="Point your camera at Chinese, Japanese or Korean text to see how to read it.">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="style.css">
+  <title>CJK Reader</title>
+</head>
+<body data-mode="idle">
+  <main id="view">
+    <video id="cam" playsinline muted autoplay></video>
+    <canvas id="still" hidden></canvas>
+    <canvas id="overlay"></canvas>
+  </main>
+
+  <header>
+    <div class="langs" role="group" aria-label="Language">
+      <button data-lang="zh" lang="zh">中文</button>
+      <button data-lang="ja" lang="ja">日本語</button>
+      <button data-lang="ko" lang="ko">한국어</button>
+    </div>
+    <div id="status" aria-live="polite"></div>
+  </header>
+
+  <section id="sheet" hidden><ol id="lines"></ol></section>
+
+  <footer>
+    <label class="btn">Photo<input id="file" type="file" accept="image/*" hidden></label>
+    <button id="shutter" class="shutter" aria-label="Freeze"></button>
+    <span class="btn spacer" aria-hidden="true"></span>
+  </footer>
+
+  <div id="start">
+    <h1>CJK Reader</h1>
+    <p>Point the camera at Chinese, Japanese or Korean text to see how to read it.</p>
+    <button id="go">Start camera</button>
+    <p id="start-msg"></p>
+    <p id="progress"></p>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

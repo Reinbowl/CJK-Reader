@@ -1,0 +1,21 @@
+{
+  "name": "cjk-reader",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Camera PWA that shows how to read Chinese (pinyin), Japanese (furigana/romaji) and Korean (romanization) text",
+  "type": "module",
+  "scripts": {
+    "vendor": "node tools/vendor.mjs",
+    "test": "node test/ocr.test.mjs && node test/reading.test.cjs",
+    "serve": "python3 -m http.server -d docs 8080"
+  },
+  "dependencies": {
+    "kuromoji": "0.1.2",
+    "onnxruntime-web": "1.30.0",
+    "pinyin-pro": "3.29.4",
+    "wanakana": "5.3.1"
+  },
+  "devDependencies": {
+    "pngjs": "7.0.0"
+  }
+}

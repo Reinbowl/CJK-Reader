@@ -1,0 +1,7 @@
+node_modules/
+.venv/
+.cache/
+__pycache__/
+# float32 models are only for local A/B testing (uv run tools/prepare_models.py --fp32);
+# delete this line to deploy them and compare with ?precision=fp32 on a phone.
+docs/models/*.fp32.onnx
