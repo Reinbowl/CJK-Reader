@@ -24,6 +24,10 @@ let stream = null, loopToken = 0, lastStill = null;
 // ---------- service worker (offline + cross-origin isolation for WASM threads) ----------
 let reloading = false;
 if ("serviceWorker" in navigator) {
+  // A new sw.js took over a page the old one served: reload once so all code comes from the new one.
+  if (navigator.serviceWorker.controller) {
+    navigator.serviceWorker.addEventListener("controllerchange", () => { reloading = true; location.reload(); }, { once: true });
+  }
   navigator.serviceWorker.register("sw.js").then(() => {
     // GitHub Pages can't send COOP/COEP headers; sw.js adds them, but only to pages it controls.
     let tried = false;
@@ -47,7 +51,7 @@ function rpc(worker, onEvent) {
     const p = pending.get(data.id);
     if (!p) return onEvent(data);
     pending.delete(data.id);
-    data.error ? p.reject(new Error(data.error)) : p.resolve(data);
+    data.error ? p.reject(Object.assign(new Error(data.error), { where: data.where })) : p.resolve(data);
   };
   worker.onerror = (e) => setStatus(`Worker error: ${e.message}`, true);
   return (msg, transfer = []) => new Promise((resolve, reject) => {
@@ -222,6 +226,10 @@ function showSheet(result) {
 }
 
 function setStatus(msg, error = false) {
+  if (msg instanceof Error) {
+    console.error(msg);
+    msg = msg.where ? `${msg.message} (${msg.where})` : msg.message;
+  }
   statusEl.textContent = msg;
   statusEl.classList.toggle("error", error);
 }
@@ -270,7 +278,7 @@ async function liveLoop(token) {
       draw(r, map);
       setStatus(timing(r));
     } catch (e) {
-      setStatus(e.message, true);
+      setStatus(e, true);
       await new Promise((r) => setTimeout(r, 1000));
     }
   }
@@ -298,7 +306,7 @@ async function readStill(src, w, h, fit) {
     showSheet(r);
     setStatus(timing(r));
   } catch (e) {
-    setStatus(e.message, true);
+    setStatus(e, true);
   }
 }
 
@@ -309,7 +317,7 @@ $("#shutter").onclick = () => {
     video.pause();
     readStill(video, video.videoWidth, video.videoHeight, "cover");
   } else {
-    live().catch((e) => setStatus(e.message, true));
+    live().catch((e) => setStatus(e, true));
   }
 };
 
@@ -336,14 +344,14 @@ function setLang(l) {
   lang = l;
   try { localStorage.setItem("lang", l); } catch {}
   document.querySelectorAll("[data-lang]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === l)));
-  ensureModels(l).catch((e) => setStatus(e.message, true));
+  ensureModels(l).catch((e) => setStatus(e, true));
   if (mode === "still" && lastStill) readStill(lastStill.src, lastStill.w, lastStill.h, lastStill.fit);
 }
 document.querySelectorAll("[data-lang]").forEach((b) => (b.onclick = () => setLang(b.dataset.lang)));
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { stopCamera(); loopToken++; }
-  else if (mode === "live") live().catch((e) => setStatus(e.message, true));
+  else if (mode === "live") live().catch((e) => setStatus(e, true));
 });
 addEventListener("resize", () => { if (mode === "still" && lastStill) readStill(lastStill.src, lastStill.w, lastStill.h, lastStill.fit); });
 

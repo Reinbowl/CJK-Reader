@@ -1,6 +1,9 @@
 // Module worker: loads onnxruntime-web and the PP-OCRv5 models, runs OCR on frames from app.js.
 import { runOCR } from "./ocr-core.js";
 
+// "file.js:line" of the first stack frame, so errors on a phone say where they came from.
+const where = (e) => (String(e?.stack ?? "").match(/([\w.-]+\.m?js):(\d+)/) ?? []).slice(1).join(":");
+
 const DICT = { zhja: "dict_zhja.txt", ko: "dict_ko.txt" };
 let ort, det, opts, ready;
 const engines = {};
@@ -70,6 +73,6 @@ onmessage = async ({ data }) => {
       postMessage({ id, ...(await runOCR(ort, e, img, { detLimit: data.detLimit })) });
     }
   } catch (e) {
-    postMessage({ id, error: String(e?.message ?? e) });
+    postMessage({ id, error: String(e?.message ?? e), where: where(e) });
   }
 };
