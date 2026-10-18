@@ -1,4 +1,4 @@
-# CJK Reader
+# [CJK Reader](https://reinbowl.github.io/CJK-Reader/)
 
 A PWA that points the phone camera at Chinese, Japanese or Korean text and shows how to read it:
 pinyin for Chinese, furigana and romaji for Japanese, Revised Romanization for Korean. It reads
