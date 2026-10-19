@@ -5,7 +5,13 @@
 const DET_MEAN = [0.485, 0.456, 0.406];
 const DET_STD = [0.229, 0.224, 0.225];
 const REC_H = 48;
-const REC_MIN_W = 320;
+// PaddleOCR pads every crop to at least 320 px wide; short boxes (calendar dates, one-word signs)
+// read the same without it and cost a fraction. Batches hold as many crops as fit REC_COLS columns.
+const REC_MIN_W = 64;
+const REC_COLS = 1280;
+
+// Recogniser input width for a crop (or batch) of the given width/height ratio.
+const recWidth = (ratio) => Math.max(REC_MIN_W, Math.ceil((REC_H * ratio) / 32) * 32);
 
 // Bilinear sample of an RGBA image, edge-clamped. Writes B,G,R (the models were trained on BGR).
 function sampleBGR(img, x, y, out) {
@@ -200,8 +206,7 @@ export function cropGeometry(pts) {
 }
 
 export function recInput(img, geoms) {
-  const maxRatio = Math.max(REC_MIN_W / REC_H, ...geoms.map((g) => g.w / g.h));
-  const W = Math.ceil((REC_H * maxRatio) / 32) * 32;
+  const W = recWidth(Math.max(...geoms.map((g) => g.w / g.h)));
   const data = new Float32Array(geoms.length * 3 * REC_H * W); // zero = mid-grey padding after normalisation
   const widths = geoms.map((g, i) => {
     const tw = Math.max(1, Math.min(W, Math.ceil((REC_H * g.w) / g.h)));
@@ -239,7 +244,8 @@ export function ctcDecode(probs, n, T, C, chars) {
 // ---------- full pipeline ----------
 
 // ort: the onnxruntime-web module; det/rec: InferenceSessions; img: {data: RGBA, width, height}.
-export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, batch = 8, dropScore = 0.5 } = {}) {
+// Boxes thinner than minLineH px are not recognised (too small to label) and come back in `skipped`.
+export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, minLineH = 0, cols = REC_COLS, dropScore = 0.5 } = {}) {
   const t0 = performance.now();
   const di = detInput(img, detLimit);
   const detOut = await det.run({ [det.inputNames[0]]: new ort.Tensor("float32", di.data, [1, 3, di.h, di.w]) });
@@ -248,10 +254,13 @@ export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, ba
   const t1 = performance.now();
 
   const geoms = boxes.map(cropGeometry);
-  const order = geoms.map((g, i) => i).sort((a, b) => geoms[a].w / geoms[a].h - geoms[b].w / geoms[b].h);
+  const ratio = (i) => geoms[i].w / geoms[i].h;
+  const order = geoms.map((g, i) => i).filter((i) => geoms[i].h >= minLineH).sort((a, b) => ratio(a) - ratio(b));
   const recs = new Array(boxes.length);
-  for (let s = 0; s < order.length; s += batch) {
-    const idx = order.slice(s, s + batch);
+  for (let s = 0, e; s < order.length; s = e) {
+    // Sorted by ratio, so the crop being added is always the widest in its batch.
+    for (e = s + 1; e < order.length && (e - s + 1) * recWidth(ratio(order[e])) <= cols; e++);
+    const idx = order.slice(s, e);
     const ri = recInput(img, idx.map((i) => geoms[i]));
     const out = (await rec.run({ [rec.inputNames[0]]: new ort.Tensor("float32", ri.data, [idx.length, 3, REC_H, ri.W]) }))[rec.outputNames[0]];
     const [, T, C] = out.dims;
@@ -267,12 +276,13 @@ export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, ba
   }
   const t2 = performance.now();
 
-  const lines = [];
+  const lines = [], skipped = [];
   boxes.forEach((pts, i) => {
     const r = recs[i];
+    if (!r) return skipped.push(pts);
     if (r.score < dropScore || !r.text.trim()) return;
     const g = geoms[i];
     lines.push({ text: r.text, score: r.score, box: pts, chars: r.chars, A: g.A, B: g.B, vertical: g.vertical });
   });
-  return { lines, ms: { det: t1 - t0, rec: t2 - t1 }, detSize: [di.w, di.h] };
+  return { lines, skipped, recognised: order.length, ms: { det: t1 - t0, rec: t2 - t1 }, detSize: [di.w, di.h] };
 }

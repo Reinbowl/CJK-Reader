@@ -6,6 +6,7 @@ const where = (e) => (String(e?.stack ?? "").match(/([\w.-]+\.m?js):(\d+)/) ?? [
 
 const DICT = { zhja: "dict_zhja.txt", ko: "dict_ko.txt" };
 let ort, det, opts, ready;
+let backend, fallback = null, gpu = null; // the backend actually in use, and why it isn't the one asked for
 const engines = {};
 
 async function download(file) {
@@ -32,11 +33,24 @@ async function download(file) {
   return buf;
 }
 
+// One backend per session, no ["webgpu", "wasm"] list: ORT would fall back silently, and the status
+// bar would claim WebGPU while WASM does the work.
 async function session(file) {
-  return ort.InferenceSession.create(await download(file), {
-    executionProviders: opts.ep === "webgpu" ? ["webgpu", "wasm"] : ["wasm"],
+  const model = await download(file);
+  const create = () => ort.InferenceSession.create(model, {
+    executionProviders: [backend],
     graphOptimizationLevel: "all",
+    // ORT's threads busy-wait between ops by default: no faster here, and it heats the phone.
+    extra: { session: { intra_op: { allow_spinning: opts.spin ? "1" : "0" } } },
   });
+  if (backend !== "webgpu") return create();
+  try {
+    return await create();
+  } catch (e) {
+    fallback = `WebGPU failed: ${e?.message ?? e}`;
+    backend = "wasm";
+    return create();
+  }
 }
 
 function engine(model) {
@@ -60,17 +74,23 @@ onmessage = async ({ data }) => {
         ort = await import(data.ep === "webgpu" ? "./vendor/ort/ort.webgpu.min.mjs" : "./vendor/ort/ort.wasm.min.mjs");
         ort.env.wasm.wasmPaths = new URL("./vendor/ort/", import.meta.url).href;
         ort.env.wasm.numThreads = data.threads;
+        backend = data.ep;
+        if (backend === "webgpu") {
+          const adapter = await navigator.gpu?.requestAdapter();
+          if (adapter) gpu = [adapter.info?.vendor, adapter.info?.architecture, adapter.features.has("shader-f16") && "f16"].filter(Boolean).join(" ") || "yes";
+          else { fallback = navigator.gpu ? "no WebGPU adapter" : "no WebGPU in this browser"; backend = "wasm"; }
+        }
         det = await session(`det.${data.precision}.onnx`);
       })();
       await ready;
-      postMessage({ id });
+      postMessage({ id, backend, fallback, gpu });
     } else if (type === "load") {
       await engine(data.model);
       postMessage({ id });
     } else if (type === "ocr") {
       const e = await engine(data.model);
       const img = { data: new Uint8ClampedArray(data.buffer), width: data.width, height: data.height };
-      postMessage({ id, ...(await runOCR(ort, e, img, { detLimit: data.detLimit })) });
+      postMessage({ id, ...(await runOCR(ort, e, img, { detLimit: data.detLimit, minLineH: data.minLineH })) });
     }
   } catch (e) {
     postMessage({ id, error: String(e?.message ?? e), where: where(e) });

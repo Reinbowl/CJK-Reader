@@ -90,13 +90,24 @@ class OCR:
         out = cv2.warpPerspective(img, M, (w, h), borderMode=cv2.BORDER_REPLICATE, flags=cv2.INTER_CUBIC)
         return np.rot90(out) if h / max(w, 1) >= 1.5 else out
 
-    def recognize(self, crops, batch=6):
-        order = np.argsort([c.shape[1] / c.shape[0] for c in crops])
+    # Like docs/ocr-core.js (not PaddleOCR): crops are padded to a 64 px minimum rather than 320,
+    # widths round up to 32, and a batch holds as many ratio-sorted crops as fit 1280 columns.
+    @staticmethod
+    def rec_width(ratio, min_w=64):
+        return max(min_w, math.ceil(48 * ratio / 32) * 32)
+
+    def recognize(self, crops, cols=1280):
+        ratios = [c.shape[1] / c.shape[0] for c in crops]
+        order = np.argsort(ratios, kind="stable")
         results = [None] * len(crops)
-        for b in range(0, len(crops), batch):
-            idx = order[b:b + batch]
-            max_ratio = max(320 / 48, *(crops[i].shape[1] / crops[i].shape[0] for i in idx))
-            W = int(48 * max_ratio)
+        s = 0
+        while s < len(order):
+            e = s + 1
+            while e < len(order) and (e - s + 1) * self.rec_width(ratios[order[e]]) <= cols:
+                e += 1
+            idx = order[s:e]
+            s = e
+            W = self.rec_width(ratios[idx[-1]])
             x = np.zeros((len(idx), 3, 48, W), np.float32)
             for j, i in enumerate(idx):
                 c = crops[i]

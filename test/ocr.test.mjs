@@ -44,6 +44,18 @@ let failed = false;
   console.log(`noise blobs -> ${boxes.length} boxes`);
   if (boxes.length) failed = true;
 }
+// Live mode: lines thinner than minLineH are not recognised but come back as skipped boxes.
+{
+  const png = PNG.sync.read(readFileSync(new URL("test/images/calendar.png", root)));
+  const img = { data: png.data, width: png.width, height: png.height };
+  const all = await runOCR(ort, engines.zhja, img, { detLimit: 960 });
+  const hs = all.lines.map((l) => Math.hypot(...l.B)).sort((a, b) => a - b);
+  const minLineH = hs[hs.length >> 1]; // median thickness: about half the lines are thinner
+  const thick = await runOCR(ort, engines.zhja, img, { detLimit: 960, minLineH });
+  console.log(`minLineH ${minLineH.toFixed(0)} -> ${thick.recognised} recognised, ${thick.skipped.length} skipped of ${all.recognised} boxes`);
+  if (thick.skipped.length < all.recognised / 4 || thick.recognised + thick.skipped.length !== all.recognised) failed = true;
+  if (thick.lines.some((l) => Math.hypot(...l.B) < minLineH)) failed = true;
+}
 for (const [name, t] of Object.entries(truth)) {
   const png = PNG.sync.read(readFileSync(new URL(`test/images/${name}.png`, root)));
   const img = { data: png.data, width: png.width, height: png.height };

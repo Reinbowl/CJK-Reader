@@ -1,8 +1,9 @@
 """Render synthetic sign/label photos with known text for checking the OCR pipeline.
 
     uv run tools/make_test_images.py --fonts /path/to/noto-cjk-otfs
+    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar   # just one scene
 
-Writes test/images/*.png and test/images/truth.json.
+Writes test/images/*.png and test/images/truth.json (entries for scenes not rendered are kept).
 """
 
 import argparse
@@ -49,20 +50,79 @@ def render(lines, font_path, rng, size=(1280, 720)):
     return img.filter(ImageFilter.GaussianBlur(0.6))
 
 
+# A wall calendar page for October 2026: lots of short, small boxes (dates, lunar days, festivals),
+# the case where recognition cost blows up. Lunar dates are plausible, not authoritative.
+LUNAR = ["初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+         "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+         "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"]
+FESTIVALS = {1: "国庆节", 8: "寒露", 10: "九月", 18: "重阳节", 23: "霜降"}
+
+
+def calendar_lines():
+    # 1 Oct 2026 is 廿一 of the 8th lunar month (29 days); the 9th month starts on 10 Oct.
+    cells = []
+    for day in range(1, 32):
+        lunar = LUNAR[20 + day - 1] if day < 10 else LUNAR[day - 10]
+        cells.append((str(day), FESTIVALS.get(day, lunar)))
+    return cells
+
+
+def render_calendar(font_path, rng, size=(960, 1280)):
+    w, h = size
+    base = np.full((h, w, 3), (246, 243, 236), np.uint8)
+    base = np.clip(base + rng.normal(0, 5, base.shape), 0, 255).astype(np.uint8)
+    img = Image.fromarray(base)
+    d = ImageDraw.Draw(img)
+    font = lambda px: ImageFont.truetype(str(font_path), px)
+    red, ink, grey = (196, 30, 36), (30, 30, 30), (110, 110, 110)
+    lines = []
+
+    def text(xy, s, px, fill, anchor="mm"):
+        d.text(xy, s, font=font(px), fill=fill, anchor=anchor)
+        lines.append(s)
+
+    text((w // 2, 90), "2026年10月", 68, red)
+    text((w // 2, 170), "丙午马年 农历八月", 34, grey)
+    x0, cw, y0 = 30, (w - 60) / 7, 250
+    for c, s in enumerate("日一二三四五六"):
+        text((x0 + cw * (c + 0.5), y0), s, 38, red if c in (0, 6) else ink)
+    rh, top = 150, y0 + 50
+    for r in range(6):
+        d.line([(x0, top + r * rh), (w - x0, top + r * rh)], fill=(215, 210, 200), width=2)
+    for i, (num, sub) in enumerate(calendar_lines()):
+        col, row = (4 + i) % 7, (4 + i) // 7
+        cx, cy = x0 + cw * (col + 0.5), top + row * rh + rh / 2
+        colour = red if col in (0, 6) or sub in FESTIVALS.values() else ink
+        text((cx, cy - 22), num, 50, colour)
+        text((cx, cy + 34), sub, 24, red if sub in FESTIVALS.values() else grey)
+    text((w * 0.32, h - 70), "宜 出行 祭祀", 34, grey)
+    text((w * 0.72, h - 70), "忌 动土", 34, grey)
+    return img.filter(ImageFilter.GaussianBlur(0.6)), lines
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fonts", required=True, type=Path)
+    ap.add_argument("--scenes", nargs="*", help="only render these (default: all)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
+    want = set(args.scenes or [*SCENES, "calendar"])
     rng = np.random.default_rng(7)
     random.seed(7)
-    truth = {}
-    for name, (font, lines) in SCENES.items():
+    truth_path = OUT / "truth.json"
+    truth = json.loads(truth_path.read_text(encoding="utf-8")) if truth_path.exists() else {}
+    # The sign scenes share one rng, so render all of them (keeping it in step) if any is wanted.
+    for name, (font, lines) in SCENES.items() if want & set(SCENES) else ():
         img = render(lines, args.fonts / font, rng)
-        img.save(OUT / f"{name}.png")
-        truth[name] = {"lang": name.split("_")[0], "lines": lines}
-    (OUT / "truth.json").write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"wrote {len(truth)} images to {OUT}")
+        if name in want:
+            img.save(OUT / f"{name}.png")
+            truth[name] = {"lang": name.split("_")[0], "lines": lines}
+    if "calendar" in want:
+        img, lines = render_calendar(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(11))
+        img.save(OUT / "calendar.png")
+        truth["calendar"] = {"lang": "zh", "lines": lines}
+    truth_path.write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"wrote {len(want)} images to {OUT}")
 
 
 if __name__ == "__main__":

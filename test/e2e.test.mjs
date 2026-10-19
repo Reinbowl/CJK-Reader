@@ -1,0 +1,257 @@
+// End-to-end checks in headless Chromium, with a fake camera playing clips made from test/images.
+//   npm run e2e                 (needs docs/models and docs/vendor; screenshots go to .cache/e2e/)
+// The app's self.cjkStats says what it is doing; the checks read that rather than the status bar.
+import { createServer } from "node:http";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { extname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { PNG } from "pngjs";
+import { chromium } from "playwright";
+
+const root = fileURLToPath(new URL("../", import.meta.url));
+const docs = join(root, "docs");
+const out = join(root, ".cache", "e2e");
+mkdirSync(out, { recursive: true });
+const truth = JSON.parse(readFileSync(join(root, "test/images/truth.json"), "utf8"));
+
+// ---------- docs/ over HTTP, like GitHub Pages: no COOP/COEP headers (sw.js adds them) ----------
+const TYPES = {
+  ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css",
+  ".json": "application/json", ".webmanifest": "application/manifest+json", ".png": "image/png",
+  ".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8", ".gz": "application/gzip",
+};
+const server = createServer((req, res) => {
+  let file = join(docs, decodeURIComponent(new URL(req.url, "http://x").pathname));
+  if (file.endsWith("/")) file += "index.html";
+  if (!file.startsWith(docs) || !existsSync(file) || statSync(file).isDirectory()) return res.writeHead(404).end();
+  res.writeHead(200, { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" });
+  res.end(readFileSync(file));
+});
+await new Promise((r) => server.listen(0, r));
+const base = `http://localhost:${server.address().port}/`;
+
+// ---------- fake camera clips: Y4M 4:2:0, portrait 9:16 like a phone's 1080×1920; Chromium loops them ----------
+// (608×1080: the fake device crops anything taller to the 1080 px the app asks for.)
+const W = 608, H = 1080, FPS = 15;
+
+// The image scaled to fitW px wide, centred on its own corner colour; dx pans it sideways. The phone
+// viewport shows the middle ~500 px of the frame's width.
+function frame(png, dx = 0, fitW = W) {
+  const s = fitW / png.width, ih = png.height * s, top = (H - ih) / 2, left = (W - fitW) / 2 + dx;
+  const rgb = new Uint8Array(W * H * 3);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const sx = Math.round((x - left) / s), sy = Math.round((y - top) / s);
+      const i = sx >= 0 && sx < png.width && sy >= 0 && sy < png.height ? (sy * png.width + sx) * 4 : 0;
+      rgb.set(png.data.subarray(i, i + 3), (y * W + x) * 3);
+    }
+  }
+  return rgb;
+}
+
+function writeY4M(name, frames) {
+  const path = join(out, `${name}.y4m`);
+  const fd = openSync(path, "w");
+  writeSync(fd, `YUV4MPEG2 W${W} H${H} F${FPS}:1 Ip A1:1 C420jpeg\n`);
+  const Y = new Uint8Array(W * H), U = new Uint8Array(W * H / 4), V = new Uint8Array(W * H / 4);
+  for (const rgb of frames) {
+    for (let i = 0; i < W * H; i++) Y[i] = 16 + 0.257 * rgb[3 * i] + 0.504 * rgb[3 * i + 1] + 0.098 * rgb[3 * i + 2];
+    for (let y = 0; y < H; y += 2) {
+      for (let x = 0; x < W; x += 2) {
+        const i = 3 * (y * W + x), j = (y / 2) * (W / 2) + x / 2;
+        U[j] = 128 - 0.148 * rgb[i] - 0.291 * rgb[i + 1] + 0.439 * rgb[i + 2];
+        V[j] = 128 + 0.439 * rgb[i] - 0.368 * rgb[i + 1] - 0.071 * rgb[i + 2];
+      }
+    }
+    writeSync(fd, "FRAME\n");
+    writeSync(fd, Y); writeSync(fd, U); writeSync(fd, V);
+  }
+  closeSync(fd);
+  return path;
+}
+
+const image = (name) => PNG.sync.read(readFileSync(join(root, `test/images/${name}.png`)));
+const repeat = (f, n) => Array(n).fill(f);
+const zh = image("zh");
+const pan = [...repeat(frame(zh), 20), ...Array.from({ length: 15 }, (_, k) => frame(zh, 14 * (k + 1))), ...repeat(frame(zh, 210), 30)];
+const clips = {
+  static: writeY4M("static", [frame(zh)]),
+  calendar: writeY4M("calendar", [frame(image("calendar"), 0, 490)]),
+  pan: writeY4M("pan", pan), // 1.3 s still, 1 s panning right, 2 s still, then a jump back
+};
+
+// CJK fonts for the screenshots, if tools/make_test_images.py's Noto font is in .cache/fonts.
+const fontDir = join(root, ".cache", "fonts");
+const fontconfig = {};
+if (existsSync(fontDir)) {
+  fontconfig.FONTCONFIG_FILE = join(out, "fonts.conf");
+  writeFileSync(fontconfig.FONTCONFIG_FILE, `<?xml version="1.0"?><!DOCTYPE fontconfig SYSTEM "fonts.dtd"><fontconfig>
+<include ignore_missing="yes">/etc/fonts/fonts.conf</include><dir>${fontDir}</dir><cachedir>${join(out, "fontcache")}</cachedir></fontconfig>\n`);
+}
+
+// ---------- helpers ----------
+let failed = false;
+function check(ok, what) {
+  console.log(`${ok ? "ok  " : "FAIL"} ${what}`);
+  if (!ok) failed = true;
+}
+
+function lev(a, b) {
+  a = [...a]; b = [...b];
+  let d = [...Array(b.length + 1).keys()];
+  for (let i = 1; i <= a.length; i++) {
+    const nd = [i];
+    for (let j = 1; j <= b.length; j++) nd[j] = Math.min(d[j] + 1, nd[j - 1] + 1, d[j - 1] + (a[i - 1] !== b[j - 1]));
+    d = nd;
+  }
+  return d[b.length];
+}
+// How far `got` is from being a piece of `want` (lines cut off at the screen edge are pieces), per char.
+const pieceErr = (got, want) => (lev(got, want) - Math.max(0, [...want].length - [...got].length)) / Math.max(1, [...got].length);
+
+async function open(clip, query = "") {
+  const browser = await chromium.launch({
+    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${clip}`],
+    env: { ...process.env, ...fontconfig },
+  });
+  const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
+  await context.grantPermissions(["camera"]);
+  const page = await context.newPage();
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(String(e)));
+  page.on("console", (m) => m.type() === "error" && errors.push(m.text()));
+  await page.goto(base + query);
+  // The first load reloads itself once the service worker can add COOP/COEP.
+  for (let end = Date.now() + 60000; ;) {
+    try {
+      await page.waitForFunction(() => self.crossOriginIsolated && self.cjkStats, null, { timeout: end - Date.now() });
+      break;
+    } catch (e) {
+      if (Date.now() > end || !/context|navigat/i.test(e.message)) throw e;
+    }
+  }
+  return { browser, page, errors };
+}
+
+const stats = (page) => page.evaluate(() => structuredClone(self.cjkStats));
+const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout, polling: 50 });
+const shot = (page, name) => page.screenshot({ path: join(out, `${name}.png`) });
+
+async function startLive(page) {
+  await page.click("#go");
+  await until(page, () => self.cjkStats.reads >= 1);
+  return Date.now();
+}
+
+// ---------- scenarios ----------
+async function staticScene() {
+  console.log("-- static sign: one read, then idle");
+  const { browser, page, errors } = await open(clips.static);
+  const t0 = await startLive(page);
+  const first = await stats(page);
+  const lines = first.lines;
+  const cam = await page.evaluate(() => `${document.querySelector("#cam").videoWidth}×${document.querySelector("#cam").videoHeight}`);
+  console.log(`    first read: ${lines} lines, ${first.skipped} small, det ${first.ms.det.toFixed(0)} ms rec ${first.ms.rec.toFixed(0)} ms, ${first.backend.backend}, camera ${cam}`);
+  check(lines >= 4, `reads at least 4 lines on the sign (${lines})`);
+  check(first.backend.backend === "wasm" && !first.backend.fallback, "WASM backend reported");
+  await page.waitForTimeout(3000);
+  const later = await stats(page);
+  check(later.reads === first.reads, `no further reads while nothing changes (${later.reads - first.reads} extra)`);
+  check(later.gate === "idle", `gate idle (${later.gate})`);
+  check(later.busy / (Date.now() - t0) < 0.5, `busy ${(100 * later.busy / (Date.now() - t0)).toFixed(0)} % of the time`);
+  const faded = await page.evaluate(() => document.querySelector("#overlay").classList.contains("faded"));
+  check(!faded, "overlay shown");
+  await shot(page, "static-live");
+  await page.click('[data-lang="ja"]');
+  await until(page, (n) => self.cjkStats.reads > n && self.cjkStats.gate === "idle", later.reads);
+  check(true, "switching language re-reads the unchanged view");
+  await page.click('[data-lang="zh"]');
+  await until(page, (n) => self.cjkStats.reads > n + 1 && self.cjkStats.gate === "idle", later.reads);
+  const back = await stats(page);
+
+  // Shutter: still mode reads the frozen frame and lists the lines.
+  await page.click("#shutter");
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n, back.reads);
+  // The sheet's lines without their ruby text.
+  const listed = await page.evaluate(() => [...document.querySelectorAll("#lines li .ruby")]
+    .map((e) => [...e.childNodes].map((n) => (n.nodeName === "RUBY" ? n.firstChild.textContent : n.textContent)).join("")));
+  const want = truth.zh.lines.map((l) => l.replace(/\s/g, ""));
+  // Lines cut off at the screen edge can end in a misread half character, so not all need to match.
+  const good = listed.filter((g) => Math.min(...want.map((w) => pieceErr(g.replace(/\s/g, ""), w))) <= 0.1);
+  console.log(`    still read: ${listed.join(" | ")}`);
+  check(good.length >= 4, `still read: ${good.length} of ${listed.length} lines are (pieces of) the sign's lines`);
+  await shot(page, "static-still");
+  await page.click("#shutter");
+  await until(page, () => self.cjkStats.mode === "live");
+  check(true, "shutter returns to live");
+
+  // Photo from the library, in Japanese.
+  await page.click('[data-lang="ja"]');
+  const before = (await stats(page)).reads;
+  await page.setInputFiles("#file", join(root, "test/images/ja.png"));
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !document.querySelector("#sheet").hidden, before);
+  const ja = await page.evaluate(() => document.querySelector("#lines").innerText);
+  check(ja.includes("tōkyō eki wa kochira desu"), "photo read in Japanese with romaji");
+  await shot(page, "photo-ja");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function calendarScene() {
+  console.log("-- calendar: many small boxes");
+  const { browser, page, errors } = await open(clips.calendar, "?debug=1");
+  await startLive(page);
+  const s = await stats(page);
+  const debug = await page.evaluate(() => document.querySelector("#debug").textContent);
+  console.log(`    ?debug=1: ${debug.split("\n").join(" / ")}`);
+  check(/gate \w+ still \d+/.test(debug) && /safe [\d./]+/.test(debug), "?debug=1 readout");
+  console.log(`    first read: ${s.lines} lines, ${s.skipped} small, ${s.recognised} recognised, det ${s.ms.det.toFixed(0)} ms rec ${s.ms.rec.toFixed(0)} ms`);
+  check(s.skipped > 0, "small lines (lunar days) are skipped in live mode");
+  check(s.recognised + s.skipped >= 50, `boxes found (${s.recognised + s.skipped})`);
+  await shot(page, "calendar-live");
+  await page.click("#shutter");
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n, s.reads);
+  const t = await stats(page);
+  console.log(`    still read: ${t.lines} lines, ${t.skipped} small, det ${t.ms.det.toFixed(0)} ms rec ${t.ms.rec.toFixed(0)} ms`);
+  check(t.skipped === 0 && t.lines >= s.lines, "still mode skips nothing");
+  await shot(page, "calendar-still");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function panScene() {
+  console.log("-- panning: no reads while moving, overlay fades, one read once settled");
+  const { browser, page, errors } = await open(clips.pan);
+  await startLive(page);
+  // Sample what the gate and overlay do over two loops of the clip (4.3 s each).
+  const log = await page.evaluate(async () => {
+    const out = [];
+    const t0 = performance.now();
+    while (performance.now() - t0 < 9000) {
+      const s = self.cjkStats;
+      out.push({ t: performance.now() - t0, gate: s.gate, reads: s.reads, faded: document.querySelector("#overlay").classList.contains("faded") });
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return out;
+  });
+  const reads = log.at(-1).reads - log[0].reads;
+  const movingFaded = log.filter((e) => e.gate === "moving");
+  console.log(`    ${reads} reads in 9 s; moving ${movingFaded.length} samples, faded while moving ${movingFaded.filter((e) => e.faded).length}`);
+  check(movingFaded.length > 10, "gate sees the pan as moving");
+  check(movingFaded.filter((e) => e.faded).length >= movingFaded.length * 0.8, "overlay fades while moving");
+  check(reads >= 2 && reads <= 8, `reads only after settling (${reads} in 9 s; continuous reading would be ~30)`);
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+try {
+  await staticScene();
+  await calendarScene();
+  await panScene();
+} catch (e) {
+  console.log("FAIL", e);
+  failed = true;
+} finally {
+  server.close();
+}
+process.exit(failed ? 1 : 0);

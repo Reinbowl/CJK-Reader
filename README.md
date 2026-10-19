@@ -5,7 +5,8 @@ pinyin for Chinese, furigana and romaji for Japanese, Revised Romanization for K
 the text, it doesn't translate it. Everything runs on the device, and it works offline after the
 first visit.
 
-- **Live:** readings float above each line of text in the camera view.
+- **Live:** readings float above each line of text in the camera view. It reads when the camera
+  is held steady on something new, and rests while nothing changes.
 - **Shutter:** freezes the frame, re-reads it at higher resolution, and lists every line with ruby text.
 - **Photo:** reads a picture from the library instead of the camera.
 
@@ -19,6 +20,18 @@ camera frame ──► ocr-worker.js (module worker)
                    reading.js: pinyin-pro (zh) · kuromoji + wanakana (ja) · RR rules (ko)
              ──► app.js draws each reading over its characters
 ```
+
+Live mode doesn't read every frame:
+
+- **Motion gate:** every 100 ms, `app.js` shrinks the view to a small grey thumbnail and compares it
+  with the previous one, and with the one from the last read.
+  - While the camera moves, nothing is read and the labels fade out.
+  - Small drift moves the labels along with the text.
+  - A read starts once the view has been still for about 0.3 s and differs from the last read.
+- **Pacing:** reads are at least 250 ms apart, and the gap is never shorter than the last read
+  took, so the OCR worker is busy at most half the time.
+- **Small lines:** lines too thin to carry a legible label (under about 20 px on screen) aren't
+  recognised in live mode. They get a dashed outline; move closer or freeze to read them.
 
 Models: PP-OCRv5 mobile, converted to ONNX, with weights stored as int8.
 
@@ -52,12 +65,13 @@ docs/                 ← the site (GitHub Pages serves this folder)
 tools/
   prepare_models.py   download pinned models, verify sha256, int8-quantize → docs/models
   ocr_ref.py          reference pipeline in Python (PaddleOCR's own pre/post-processing), fp32 vs int8 eval
-  make_test_images.py render test/images from Noto CJK fonts
+  make_test_images.py render test/images (signs + a calendar page) from Noto CJK fonts
   make_icons.py       render docs/icons
   vendor.mjs          copy onnxruntime-web, pinyin-pro, wanakana, kuromoji into docs/vendor
 test/
   ocr.test.mjs        runs docs/ocr-core.js on test/images via onnxruntime-web, compares with Python
   reading.test.cjs    pinyin / romaji / Korean romanization cases
+  e2e.test.mjs        Playwright + headless Chromium with a fake camera fed from test/images
 ```
 
 ## Build
@@ -67,6 +81,7 @@ npm ci                                  # JS deps (versions pinned)
 npm run vendor                          # → docs/vendor
 uv run tools/prepare_models.py          # → docs/models (add --fp32 to also keep float32 copies)
 npm test                                # OCR pipeline + reading tests
+npm run e2e                             # the app in headless Chromium (screenshots in .cache/e2e/)
 npm run serve                           # http://localhost:8080 (localhost counts as secure for the camera)
 ```
 
@@ -94,7 +109,8 @@ Installing on a phone:
 
 ## Performance testing
 
-The status bar shows detector and recognizer time per frame. URL switches:
+The status bar shows detector and recognizer time per read, the number of lines (plus small ones
+skipped), and the backend actually in use. URL switches:
 
 | param | default | |
 |---|---|---|
@@ -102,10 +118,19 @@ The status bar shows detector and recognizer time per frame. URL switches:
 | `precision` | `int8` | `fp32` needs the fp32 files deployed (see `.gitignore`) |
 | `threads` | `min(4, cores)` | `1` to compare single-threaded |
 | `det` | `640` | detector input size in live mode (longest side); lower is faster, higher finds smaller text |
+| `spin` | `0` | `1` lets ONNX Runtime's threads busy-wait between ops (its default; costs battery) |
+| `debug` | off | `1` shows the motion gate's numbers and the viewport/safe-area sizes under the status bar |
 
-Desktop Chromium (headless, 4 threads, 1280×720 frame with 6 lines): detection ~80 ms,
-recognition ~150–320 ms. Phones haven't been measured yet. Recognition time grows with the
-number of lines in view.
+Recognition time grows with the total width of the lines in view. Each crop is padded only to a
+multiple of 32 px (64 px minimum), not to PaddleOCR's 320 px, so short boxes such as calendar
+dates are cheap. The calendar page in `test/images` has 72 boxes:
+
+| desktop, WASM | detection | recognition |
+|---|---|---|
+| 1 thread, 960 px | 530 ms | 1400 ms (4400 ms with 320 px padding) |
+| 4 threads, 960 px | | 530 ms (1690 ms with 320 px padding) |
+
+On an iPhone, 6 lines took about 300–500 ms and a calendar about 3000 ms before this change.
 
 ## Known limitations
 
@@ -121,6 +146,9 @@ number of lines in view.
   read Hangul, and kanji-only text can't tell Chinese from Japanese.
 - **ー vs 一:** the recognizer sometimes reads 一 (one) as ー (long-vowel mark). `reading.js` fixes
   that from the surrounding characters.
+- **Label size:** each line's labels share one font size that has to fit over every syllable, so
+  live labels only appear once characters are roughly 25–30 px on screen. Freeze to read smaller
+  text in the list.
 
 ## Sources and licenses
 

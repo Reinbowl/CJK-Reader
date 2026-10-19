@@ -29,14 +29,18 @@
       <button data-lang="ko" lang="ko">한국어</button>
     </div>
     <div id="status" aria-live="polite"></div>
+    <pre id="debug" hidden></pre>
   </header>
 
   <section id="sheet" hidden><ol id="lines"></ol></section>
 
   <footer>
-    <label class="btn">Photo<input id="file" type="file" accept="image/*" hidden></label>
+    <label class="btn icon" aria-label="Open photo" title="Open photo">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10.5a3 3 0 0 1 3 3V17"/><rect x="3.5" y="7" width="13.5" height="13.5" rx="2.5"/><circle cx="8.3" cy="11.8" r="1.5"/><path d="M17 17.5l-4-4-8.5 7"/></svg>
+      <input id="file" type="file" accept="image/*" hidden>
+    </label>
     <button id="shutter" class="shutter" aria-label="Freeze"></button>
-    <span class="btn spacer" aria-hidden="true"></span>
+    <span class="btn icon spacer" aria-hidden="true"></span>
   </footer>
 
   <div id="start">
