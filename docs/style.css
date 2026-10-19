@@ -13,8 +13,7 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color:
   font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; }
 button, .btn { font: inherit; color: inherit; cursor: pointer; }
 
-/* --gap: strip below the layout viewport on iOS home-screen apps (set in app.js fitScreen). */
-#view { position: fixed; inset: 0; bottom: calc(-1 * var(--gap, 0px)); }
+#view { position: fixed; inset: 0; }
 #view > * { position: absolute; inset: 0; width: 100%; height: 100%; }
 #cam { object-fit: cover; }
 #overlay { pointer-events: none; transition: opacity .15s; }
@@ -26,26 +25,30 @@ header { position: fixed; z-index: 2; top: 0; left: 0; right: 0; padding: calc(v
 .langs { display: flex; background: rgba(0,0,0,.5); border-radius: 999px; padding: 3px; }
 .langs button { border: 0; background: none; padding: 6px 14px; border-radius: 999px; font-size: 16px; }
 .langs button[aria-pressed="true"] { background: var(--accent); color: #111; font-weight: 600; }
-#status { font-size: 12px; color: var(--muted); text-shadow: 0 1px 2px #000; min-height: 1.4em; text-align: center; }
+#status { align-self: stretch; font-size: 12px; color: var(--muted); text-shadow: 0 1px 2px #000; min-height: 1.4em; text-align: center; }
 #status.error { color: #fca5a5; }
 #debug { margin: 0; font: 10px/1.35 ui-monospace, Menlo, monospace; color: #d4d4d8; background: rgba(0,0,0,.55);
   padding: 4px 6px; border-radius: 6px; white-space: pre-wrap; max-width: 100%; }
+#devbar { display: flex; flex-wrap: wrap; justify-content: center; gap: 4px; }
+#devbar[hidden] { display: none; }
+#devbar button { border: 0; border-radius: 6px; padding: 4px 8px; font-size: 11px; background: rgba(0,0,0,.6); }
+#devbar button[aria-pressed="true"] { background: var(--accent); color: #111; }
 
-footer { position: fixed; z-index: 2; left: 0; right: 0; bottom: calc(-1 * var(--gap, 0px)); padding: 12px 24px calc(var(--safe-b) + 16px);
+footer { position: fixed; z-index: 2; left: 0; right: 0; bottom: 0; padding: 12px 24px calc(var(--safe-b) + 16px);
   display: flex; align-items: center; justify-content: space-between;
   background: linear-gradient(transparent, rgba(0,0,0,.6)); }
 .btn { min-width: 64px; padding: 8px 12px; border-radius: 10px; background: rgba(0,0,0,.5); text-align: center; }
-.btn.icon { min-width: 0; width: 48px; height: 48px; padding: 0; border-radius: 14px; display: grid; place-items: center; }
+.btn.icon { min-width: 0; width: 48px; height: 48px; padding: 0; border: 0; border-radius: 14px; display: grid; place-items: center; }
 .btn.icon svg { width: 28px; height: 28px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
-.spacer { visibility: hidden; }
+body:not([data-mode="still"]) #list { visibility: hidden; }
+#list[aria-pressed="true"] { background: var(--accent); color: #111; }
 .shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,.25); }
 .shutter:active { transform: scale(.94); }
 body[data-mode="idle"] .shutter { visibility: hidden; }
 body[data-mode="still"] .shutter { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 700; }
 
-#sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 100px - var(--gap, 0px)); max-height: 42vh; overflow-y: auto;
+#sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 100px); max-height: 42vh; overflow-y: auto;
   margin: 0 12px; padding: 4px 16px; border-radius: 14px; background: var(--panel); backdrop-filter: blur(8px); }
-#sheet.collapsed { max-height: 4.6em; overflow: hidden; }
 #lines { list-style: none; margin: 0; padding: 0; }
 #lines li { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.1); }
 #lines li:last-child { border-bottom: 0; }

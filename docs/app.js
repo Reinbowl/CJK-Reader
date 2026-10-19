@@ -3,13 +3,17 @@ const $ = (s) => document.querySelector(s);
 const view = $("#view"), video = $("#cam"), still = $("#still"), overlay = $("#overlay");
 const statusEl = $("#status"), sheet = $("#sheet"), linesEl = $("#lines");
 
-// URL switches for performance testing: ?ep=webgpu &precision=fp32 &threads=1 &det=480 &spin=1 &debug=1
+// URL switches for performance testing: ?ep=webgpu &precision=fp32 &threads=1 &det=480 &spin=1 &debug=1.
+// A home-screen app can't be given URL switches, so ep/threads/spin/debug can also be set in the dev
+// panel (tap the status line three times), which keeps them in localStorage. A URL switch wins.
 const params = new URLSearchParams(location.search);
-const EP = params.get("ep") === "webgpu" ? "webgpu" : "wasm";
+const dev = (() => { try { return JSON.parse(localStorage.getItem("dev")) || {}; } catch { return {}; } })();
+const setting = (k) => params.get(k) ?? dev[k];
+const EP = setting("ep") === "webgpu" ? "webgpu" : "wasm";
 const PRECISION = params.get("precision") === "fp32" ? "fp32" : "int8";
-const THREADS = Number(params.get("threads")) || (self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1);
-const SPIN = params.get("spin") === "1"; // let ORT's threads busy-wait between ops (its own default)
-const DEBUG = params.has("debug");
+const THREADS = Number(setting("threads")) || (self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1);
+const SPIN = String(setting("spin")) === "1"; // let ORT's threads busy-wait between ops (its own default)
+let DEBUG = params.has("debug") || !!dev.debug;
 const LIVE_DET = Number(params.get("det")) || 640; // detector input, longest side
 const STILL_DET = 960;
 const LIVE_MAX = 1280, STILL_MAX = 1920; // captured image, longest side (recogniser crops come from this)
@@ -320,7 +324,8 @@ function draw(result, map) {
   });
 }
 
-function showSheet(result) {
+// Fill the list of lines with ruby text; the list button (#list) shows it.
+function fillSheet(result) {
   linesEl.replaceChildren(...result.notes.map((note) => {
     const li = document.createElement("li");
     const text = document.createElement("div");
@@ -343,7 +348,11 @@ function showSheet(result) {
     return li;
   }));
   if (!result.notes.length) linesEl.innerHTML = "<li class=empty>No text found. Try moving closer or holding steady.</li>";
-  sheet.hidden = false;
+}
+
+function toggleSheet(open = sheet.hidden) {
+  sheet.hidden = !open;
+  $("#list").setAttribute("aria-pressed", String(open));
 }
 
 function setStatus(msg, error = false) {
@@ -357,25 +366,12 @@ function setStatus(msg, error = false) {
 const timing = (r) => `det ${r.ms.det.toFixed(0)} ms · rec ${r.ms.rec.toFixed(0)} ms · ${r.lines.length} lines` +
   `${r.skipped.length ? ` (+${r.skipped.length} small)` : ""} · ${backend}×${THREADS} ${PRECISION}`;
 
-// ---------- layout ----------
-// iOS home-screen apps with the black-translucent status bar can get a layout viewport shorter than
-// the screen, leaving a black strip at the bottom. Measure it and extend #view and the footer over it.
-const iosStandalone = navigator.standalone === true;
-let bottomGap = 0;
-function fitScreen() {
-  if (!iosStandalone) return;
-  const portrait = matchMedia("(orientation: portrait)").matches;
-  const screenH = portrait ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
-  const gap = Math.round(screenH - innerHeight);
-  bottomGap = gap > 0 && gap < 100 ? gap : 0;
-  document.documentElement.style.setProperty("--gap", `${bottomGap}px`);
-}
-fitScreen();
-addEventListener("resize", fitScreen);
-
-// ?debug=1: gate and viewport numbers under the status line, for tuning on a phone.
+// ---------- dev panel ----------
+// Tap the status line three times: gate and viewport numbers, plus backend/threads/spin switches that
+// reload the app. For tuning on a phone, where a home-screen app takes no URL switches.
 let probe = null;
 function debugReadout() {
+  if (!DEBUG) return;
   if (!probe) {
     probe = document.createElement("div");
     probe.style.cssText = "position:fixed;visibility:hidden;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)";
@@ -383,16 +379,49 @@ function debugReadout() {
   }
   const s = getComputedStyle(probe);
   const f = (c) => (c ? `${c.dx.toFixed(2)},${c.dy.toFixed(2)} e${c.err.toFixed(2)}` : "-");
-  const el = $("#debug");
-  el.hidden = false;
-  el.textContent = [
+  $("#debug").textContent = [
     `gate ${gate.state} still ${gate.still} motion ${f(gate.motion)} drift ${f(gate.drift)}`,
     `reads ${stats.reads} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
     `inner ${innerWidth}×${innerHeight} screen ${screen.width}×${screen.height} vv ${visualViewport?.height.toFixed(0)} view ${view.clientHeight}`,
-    `safe ${[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(parseFloat).join("/")} standalone ${iosStandalone || matchMedia("(display-mode: standalone)").matches} gap ${bottomGap}`,
+    `safe ${[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(parseFloat).join("/")} standalone ${navigator.standalone ?? matchMedia("(display-mode: standalone)").matches}`,
     ...(stats.backend.fallback ? [stats.backend.fallback] : []),
   ].join("\n");
 }
+
+function saveDev(change) {
+  Object.assign(dev, change);
+  try { localStorage.setItem("dev", JSON.stringify(dev)); } catch {}
+}
+
+function showDev() {
+  $("#debug").hidden = $("#devbar").hidden = !DEBUG;
+  if (!DEBUG) return;
+  const opt = (label, key, value, on) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.setAttribute("aria-pressed", String(on));
+    b.onclick = () => { saveDev({ [key]: value }); location.reload(); };
+    return b;
+  };
+  const threads = Number(dev.threads) || 0; // 0: automatic
+  $("#devbar").replaceChildren(
+    opt("WASM", "ep", "wasm", EP === "wasm"), opt("WebGPU", "ep", "webgpu", EP === "webgpu"),
+    ...[0, 1, 2, 4].map((n) => opt(n ? `${n} thr` : "auto thr", "threads", n || null, threads === n)),
+    opt(SPIN ? "spin on" : "spin off", "spin", SPIN ? 0 : 1, SPIN),
+  );
+  debugReadout();
+}
+
+let taps = [];
+statusEl.addEventListener("click", () => {
+  const now = performance.now();
+  taps = [...taps.filter((t) => now - t < 700), now];
+  if (taps.length < 3) return;
+  taps = [];
+  DEBUG = !DEBUG;
+  saveDev({ debug: DEBUG });
+  showDev();
+});
 
 // ---------- modes ----------
 function setMode(m) {
@@ -421,8 +450,8 @@ function stopCamera() {
 async function live() {
   setMode("live");
   still.hidden = true;
-  sheet.hidden = true;
   setShutter("Freeze", "");
+  toggleSheet(false);
   sizeCanvas(overlay);
   if (!stream) await startCamera();
   else await video.play(); // resuming after a freeze, which only paused the video
@@ -479,14 +508,15 @@ async function readStill(src, w, h, fit) {
     const r = await read(image, STILL_DET);
     if (mode !== "still") return;
     draw(r, map);
-    showSheet(r);
+    fillSheet(r);
     setStatus(timing(r));
   } catch (e) {
     setStatus(e, true);
   }
 }
 
-sheet.onclick = () => sheet.classList.toggle("collapsed");
+sheet.onclick = () => toggleSheet(false);
+$("#list").onclick = () => toggleSheet();
 
 $("#shutter").onclick = () => {
   if (mode === "live" && video.videoWidth) {
@@ -533,6 +563,7 @@ document.addEventListener("visibilitychange", () => {
 addEventListener("resize", () => { if (mode === "still" && lastStill) readStill(lastStill.src, lastStill.w, lastStill.h, lastStill.fit); });
 
 if (!navigator.mediaDevices?.getUserMedia) $("#start-msg").textContent = "No camera access here (needs HTTPS). You can still open a photo.";
-if (DEBUG) { debugReadout(); inited.then(debugReadout, () => {}); }
+showDev();
+inited.then(debugReadout, () => {});
 setLang(lang);
 inited.catch((e) => { if (!reloading) setStatus(`Model load failed: ${e.message}`, true); });

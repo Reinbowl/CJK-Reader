@@ -7,7 +7,8 @@ first visit.
 
 - **Live:** readings float above each line of text in the camera view. It reads when the camera
   is held steady on something new, and rests while nothing changes.
-- **Shutter:** freezes the frame, re-reads it at higher resolution, and lists every line with ruby text.
+- **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
+  it. The list button shows every line with ruby text.
 - **Photo:** reads a picture from the library instead of the camera.
 
 ## How it works
@@ -120,6 +121,10 @@ skipped), and the backend actually in use. URL switches:
 | `det` | `640` | detector input size in live mode (longest side); lower is faster, higher finds smaller text |
 | `spin` | `0` | `1` lets ONNX Runtime's threads busy-wait between ops (its default; costs battery) |
 | `debug` | off | `1` shows the motion gate's numbers and the viewport/safe-area sizes under the status bar |
+
+A home-screen app can't be given URL switches. Instead, **tap the status line three times** to open
+a dev panel with the debug readout and buttons for `ep`, `threads` and `spin`. The buttons reload
+the app, and the choices are saved on the device. A URL switch overrides the panel.
 
 Recognition time grows with the total width of the lines in view. Each crop is padded only to a
 multiple of 32 px (64 px minimum), not to PaddleOCR's 320 px, so short boxes such as calendar

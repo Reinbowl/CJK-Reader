@@ -180,7 +180,14 @@ async function staticScene() {
   const good = listed.filter((g) => Math.min(...want.map((w) => pieceErr(g.replace(/\s/g, ""), w))) <= 0.1);
   console.log(`    still read: ${listed.join(" | ")}`);
   check(good.length >= 4, `still read: ${good.length} of ${listed.length} lines are (pieces of) the sign's lines`);
+  const sheetHidden = () => page.evaluate(() => document.querySelector("#sheet").hidden);
+  check(await sheetHidden(), "the list stays closed after the shutter");
   await shot(page, "static-still");
+  await page.tap("#list");
+  check(!(await sheetHidden()), "list button opens the list");
+  await shot(page, "static-still-list");
+  await page.tap("#sheet");
+  check(await sheetHidden(), "tapping the list closes it");
   await page.click("#shutter");
   await until(page, () => self.cjkStats.mode === "live");
   check(true, "shutter returns to live");
@@ -189,7 +196,8 @@ async function staticScene() {
   await page.click('[data-lang="ja"]');
   const before = (await stats(page)).reads;
   await page.setInputFiles("#file", join(root, "test/images/ja.png"));
-  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !document.querySelector("#sheet").hidden, before);
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n, before);
+  await page.tap("#list");
   const ja = await page.evaluate(() => document.querySelector("#lines").innerText);
   check(ja.includes("tōkyō eki wa kochira desu"), "photo read in Japanese with romaji");
   await shot(page, "photo-ja");
@@ -199,12 +207,23 @@ async function staticScene() {
 
 async function calendarScene() {
   console.log("-- calendar: many small boxes");
-  const { browser, page, errors } = await open(clips.calendar, "?debug=1");
+  const { browser, page, errors } = await open(clips.calendar);
+  // Dev panel: three taps on the status line, then WebGPU (headless Chromium has no adapter, so the
+  // app must say it fell back), then back to WASM. Both reload the app; the panel stays open.
+  for (let k = 0; k < 3; k++) await page.tap("#status");
+  check(await page.isVisible("#devbar"), "three taps on the status line open the dev panel");
+  for (const [label, want] of [["WebGPU", "webgpu"], ["WASM", "wasm"]]) {
+    await Promise.all([page.waitForNavigation(), page.click(`#devbar button:text-is("${label}")`)]);
+    await until(page, () => self.cjkStats?.backend?.backend);
+    const b = (await stats(page)).backend;
+    console.log(`    dev panel ${label}: ${JSON.stringify(b)}`);
+    check(want === "wasm" ? b.backend === "wasm" && !b.fallback : b.backend === "webgpu" || !!b.fallback, `${label} chosen, and any fallback reported`);
+  }
   await startLive(page);
   const s = await stats(page);
   const debug = await page.evaluate(() => document.querySelector("#debug").textContent);
-  console.log(`    ?debug=1: ${debug.split("\n").join(" / ")}`);
-  check(/gate \w+ still \d+/.test(debug) && /safe [\d./]+/.test(debug), "?debug=1 readout");
+  console.log(`    debug: ${debug.split("\n").join(" / ")}`);
+  check(/gate \w+ still \d+/.test(debug) && /safe [\d./]+/.test(debug), "debug readout");
   console.log(`    first read: ${s.lines} lines, ${s.skipped} small, ${s.recognised} recognised, det ${s.ms.det.toFixed(0)} ms rec ${s.ms.rec.toFixed(0)} ms`);
   check(s.skipped > 0, "small lines (lunar days) are skipped in live mode");
   check(s.recognised + s.skipped >= 50, `boxes found (${s.recognised + s.skipped})`);

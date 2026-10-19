@@ -71,15 +71,16 @@ onmessage = async ({ data }) => {
     if (type === "init") {
       opts = data;
       ready = (async () => {
-        ort = await import(data.ep === "webgpu" ? "./vendor/ort/ort.webgpu.min.mjs" : "./vendor/ort/ort.wasm.min.mjs");
-        ort.env.wasm.wasmPaths = new URL("./vendor/ort/", import.meta.url).href;
-        ort.env.wasm.numThreads = data.threads;
         backend = data.ep;
         if (backend === "webgpu") {
           const adapter = await navigator.gpu?.requestAdapter();
           if (adapter) gpu = [adapter.info?.vendor, adapter.info?.architecture, adapter.features.has("shader-f16") && "f16"].filter(Boolean).join(" ") || "yes";
           else { fallback = navigator.gpu ? "no WebGPU adapter" : "no WebGPU in this browser"; backend = "wasm"; }
         }
+        // The WebGPU build (27 MB) also runs WASM sessions, for a fallback after a failed WebGPU one.
+        ort = await import(backend === "webgpu" ? "./vendor/ort/ort.webgpu.min.mjs" : "./vendor/ort/ort.wasm.min.mjs");
+        ort.env.wasm.wasmPaths = new URL("./vendor/ort/", import.meta.url).href;
+        ort.env.wasm.numThreads = data.threads;
         det = await session(`det.${data.precision}.onnx`);
       })();
       await ready;

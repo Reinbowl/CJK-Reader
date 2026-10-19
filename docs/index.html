@@ -6,7 +6,9 @@
   <meta name="theme-color" content="#000000">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <!-- "black", not "black-translucent": with translucent, iOS home-screen apps get a window one status
+       bar shorter than the screen, pinned to the top, leaving a black strip at the bottom. -->
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="CJK Reader">
   <meta name="description" content="Point your camera at Chinese, Japanese or Korean text to see how to read it.">
   <link rel="manifest" href="manifest.webmanifest">
@@ -30,6 +32,7 @@
     </div>
     <div id="status" aria-live="polite"></div>
     <pre id="debug" hidden></pre>
+    <div id="devbar" hidden></div>
   </header>
 
   <section id="sheet" hidden><ol id="lines"></ol></section>
@@ -40,7 +43,9 @@
       <input id="file" type="file" accept="image/*" hidden>
     </label>
     <button id="shutter" class="shutter" aria-label="Freeze"></button>
-    <span class="btn icon spacer" aria-hidden="true"></span>
+    <button id="list" class="btn icon" aria-label="List of lines" aria-pressed="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6.5h11M9 12h11M9 17.5h11"/><circle cx="4.5" cy="6.5" r="1"/><circle cx="4.5" cy="12" r="1"/><circle cx="4.5" cy="17.5" r="1"/></svg>
+    </button>
   </footer>
 
   <div id="start">
