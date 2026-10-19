@@ -82,8 +82,10 @@ Deploy from a branch → `main` / `/docs`**.
 - **Headers:** GitHub Pages can't send the COOP/COEP headers that multithreaded WASM needs, so
   `sw.js` adds them. On first visit the page reloads once to pick them up. The status bar shows
   `wasm×4` when threads are working.
-- **Cache:** models and vendor files are served cache-first. **Bump `VERSION` in `sw.js`**
-  whenever you change them, otherwise installed apps keep the old files.
+- **Cache:** app code (HTML, JS, CSS) is checked with the server on every load, so a deploy
+  shows up on the next reload. Models and vendor files are served cache-first: **bump `ASSETS` in
+  `sw.js`** whenever you change them, otherwise installed apps keep the old files. When `sw.js`
+  itself changes, open pages reload once to switch to it.
 
 Installing on a phone:
 
