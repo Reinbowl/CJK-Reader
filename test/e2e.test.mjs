@@ -112,9 +112,9 @@ function lev(a, b) {
 // How far `got` is from being a piece of `want` (lines cut off at the screen edge are pieces), per char.
 const pieceErr = (got, want) => (lev(got, want) - Math.max(0, [...want].length - [...got].length)) / Math.max(1, [...got].length);
 
-async function open(clip, query = "") {
+async function open(clip, query = "", extraArgs = []) {
   const browser = await chromium.launch({
-    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${clip}`],
+    args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${clip}`, ...extraArgs],
     env: { ...process.env, ...fontconfig },
   });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
@@ -269,6 +269,15 @@ async function panScene() {
   check(fast.length >= 5, "gate sees the pan as a fast move");
   check(fast.filter((e) => e.faded).length >= fast.length * 0.8, "overlay fades during the fast move");
   check(reads >= 2 && reads <= 8, `reads only after settling (${reads} in 9 s; continuous reading would be ~30)`);
+  // Snap while a live read is still running: the live read is cancelled (or finishes first), the
+  // still read runs after it, never alongside it.
+  await until(page, () => self.cjkStats.mode === "live" && self.cjkStats.reading > 0);
+  const before = await stats(page);
+  await page.click("#shutter");
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !self.cjkStats.reading, before.reads);
+  const after = await stats(page);
+  console.log(`    snap during a live read: ${after.cancelled - before.cancelled} live read cancelled, still read ${after.lines} lines`);
+  check(after.lines > 0, "snap during a live read gives a still read");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -289,11 +298,35 @@ async function tremorScene() {
   await browser.close();
 }
 
+// WebGPU through SwiftShader (software, so a read takes ~10 s): only with E2E_WEBGPU=1. Snapping
+// during a live read used to run two reads at once on the GPU, which fails on iOS ("Failed to
+// download data from buffer") and hangs SwiftShader.
+async function webgpuScene() {
+  console.log("-- WebGPU (SwiftShader): snap during a live read");
+  const { browser, page, errors } = await open(clips.pan, "?ep=webgpu", ["--enable-unsafe-webgpu", "--enable-unsafe-swiftshader"]);
+  page.setDefaultTimeout(240000);
+  await page.click("#go");
+  await until(page, () => self.cjkStats.reads >= 1, null, 240000);
+  const first = await stats(page);
+  console.log(`    first read: ${first.lines} lines, det ${first.ms.det.toFixed(0)} ms rec ${first.ms.rec.toFixed(0)} ms, ${JSON.stringify(first.backend)}`);
+  check(first.backend.backend === "webgpu" && !first.backend.fallback, "runs on WebGPU");
+  await until(page, () => self.cjkStats.mode === "live" && self.cjkStats.reading > 0, null, 240000);
+  await page.click("#shutter");
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !self.cjkStats.reading, first.reads, 240000);
+  const after = await stats(page);
+  console.log(`    snap: ${after.cancelled} live read cancelled, still read ${after.lines} lines, ${JSON.stringify(after.backend)}`);
+  check(after.lines > 0 && after.backend.backend === "webgpu" && !after.backend.fallback, "snap during a live read works on WebGPU, no fallback");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+// E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
+const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, pan: panScene, tremor: tremorScene };
+const only = process.env.E2E_ONLY?.split(",");
 try {
-  await staticScene();
-  await calendarScene();
-  await panScene();
-  await tremorScene();
+  for (const [name, scene] of Object.entries(scenes)) {
+    if (only ? only.includes(name) : name !== "webgpu" || process.env.E2E_WEBGPU === "1") await scene();
+  }
 } catch (e) {
   console.log("FAIL", e);
   failed = true;

@@ -25,7 +25,7 @@ const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
 // What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug.
-const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null });
+const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0 });
 
 let lang = (() => {
   try { const saved = localStorage.getItem("lang"); if (MODEL[saved]) return saved; } catch {}
@@ -65,7 +65,7 @@ function rpc(worker, onEvent) {
     const p = pending.get(data.id);
     if (!p) return onEvent(data);
     pending.delete(data.id);
-    data.error ? p.reject(Object.assign(new Error(data.error), { where: data.where })) : p.resolve(data);
+    data.error ? p.reject(Object.assign(new Error(data.error), { where: data.where, cancelled: data.cancelled })) : p.resolve(data);
   };
   worker.onerror = (e) => setStatus(`Worker error: ${e.message}`, true);
   return (msg, transfer = []) => new Promise((resolve, reject) => {
@@ -84,15 +84,18 @@ function onProgress({ type, file, loaded, total }) {
   $("#progress").textContent = parts.join(" · ");
 }
 
-const ocr = rpc(new Worker("ocr-worker.js", { type: "module" }), onProgress);
+// The OCR worker also says when it had to move from WebGPU to WASM mid-session.
+const ocr = rpc(new Worker("ocr-worker.js", { type: "module" }), (d) => (d.type === "backend" ? onBackend(d) : onProgress(d)));
 const reading = rpc(new Worker("reading-worker.js"), onProgress);
 const inited = ocr({ type: "init", ep: EP, precision: PRECISION, threads: THREADS, spin: SPIN });
 let backend = EP;
-inited.then((r) => {
+function onBackend(r) {
   backend = r.fallback ? `${r.backend} (no webgpu)` : r.backend;
   stats.backend = { ...r };
   if (r.fallback) console.warn(r.fallback);
-}, () => {});
+  debugReadout();
+}
+inited.then(onBackend, () => {});
 const loaded = {};
 function ensureModels(l) {
   loaded[l] ??= Promise.all([inited, ocr({ type: "load", model: MODEL[l] }), reading({ type: "load", lang: l })])
@@ -132,7 +135,10 @@ function grab(src, srcW, srcH, maxSide, fit) {
 async function read(image, detLimit, minLineH = 0) {
   await ensureModels(lang);
   const l = lang;
-  const res = await ocr({ type: "ocr", model: MODEL[l], detLimit, minLineH, buffer: image.data.buffer, width: image.width, height: image.height }, [image.data.buffer]);
+  stats.reading++;
+  const res = await ocr({ type: "ocr", model: MODEL[l], detLimit, minLineH, buffer: image.data.buffer, width: image.width, height: image.height }, [image.data.buffer])
+    .catch((e) => { if (e.cancelled) stats.cancelled++; throw e; })
+    .finally(() => stats.reading--);
   const notes = res.lines.length ? (await reading({ type: "annotate", lang: l, texts: res.lines.map((x) => x.text) })).lines : [];
   Object.assign(stats, { reads: stats.reads + 1, lines: res.lines.length, skipped: res.skipped.length, recognised: stats.recognised + res.recognised, ms: res.ms });
   return { ...res, notes, lang: l };
@@ -580,6 +586,7 @@ async function liveLoop(token) {
       sample(); // shift the new overlay to where the text is now, or hide it if the view moved meanwhile
       setStatus(timing(r));
     } catch (e) {
+      if (mode !== "live" || token !== loopToken) break; // cancelled by the shutter, or stopped
       setStatus(e, true);
       await sleep(1000);
     }
@@ -589,6 +596,7 @@ async function liveLoop(token) {
 // Read a still image (frozen camera frame or picked photo) at higher resolution and list the lines.
 // keep: the shutter froze the live view; its labels stay up until the new read is drawn.
 async function readStill(src, w, h, fit, keep = false) {
+  ocr({ type: "cancel" }).catch(() => {}); // drop the live read (or older still read) in progress
   keep &&= mode === "live" && !overlay.classList.contains("faded");
   setMode("still");
   loopToken++;
@@ -611,7 +619,7 @@ async function readStill(src, w, h, fit, keep = false) {
     fillSheet(r);
     setStatus(timing(r));
   } catch (e) {
-    setStatus(e, true);
+    if (!e.cancelled) setStatus(e, true); // cancelled: a newer still read took over
   }
 }
 
@@ -664,6 +672,5 @@ addEventListener("resize", () => { if (mode === "still" && lastStill) readStill(
 
 if (!navigator.mediaDevices?.getUserMedia) $("#start-msg").textContent = "No camera access here (needs HTTPS). You can still open a photo.";
 showDev();
-inited.then(debugReadout, () => {});
 setLang(lang);
 inited.catch((e) => { if (!reloading) setStatus(`Model load failed: ${e.message}`, true); });

@@ -247,19 +247,25 @@ export function ctcDecode(probs, n, T, C, chars) {
 
 // ort: the onnxruntime-web module; det/rec: InferenceSessions; img: {data: RGBA, width, height}.
 // Boxes thinner than minLineH px are not recognised (too small to label) and come back in `skipped`.
-export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, minLineH = 0, cols = REC_COLS, dropScore = 0.5 } = {}) {
+// stop() is checked between model runs; once it returns true the read gives up with a "cancelled"
+// error (the shutter does this to a live read still in progress).
+export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, minLineH = 0, cols = REC_COLS, dropScore = 0.5, stop = () => false } = {}) {
+  const check = () => { if (stop()) throw Object.assign(new Error("cancelled"), { cancelled: true }); };
+  check();
   const t0 = performance.now();
   const di = detInput(img, detLimit);
   const detOut = await det.run({ [det.inputNames[0]]: new ort.Tensor("float32", di.data, [1, 3, di.h, di.w]) });
   const prob = detOut[det.outputNames[0]].data;
   const boxes = detBoxes(prob, di.w, di.h, di.sx, di.sy);
   const t1 = performance.now();
+  check();
 
   const geoms = boxes.map(cropGeometry);
   const ratio = (i) => geoms[i].w / geoms[i].h;
   const order = geoms.map((g, i) => i).filter((i) => geoms[i].h >= minLineH).sort((a, b) => ratio(a) - ratio(b));
   const recs = new Array(boxes.length);
   for (let s = 0, e; s < order.length; s = e) {
+    check();
     // Sorted by ratio, so the crop being added is always the widest in its batch.
     for (e = s + 1; e < order.length && (e - s + 1) * recWidth(ratio(order[e])) <= cols; e++);
     const idx = order.slice(s, e);

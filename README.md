@@ -32,6 +32,9 @@ Live mode doesn't read every frame:
     changed since the last read.
   - What counts as "the same scene" adapts to how much the image jitters while steady. Big, sharp
     text close to the camera jitters more than a distant sign.
+- **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
+  the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
+  switches to WASM until the next launch, and the status bar says so.
 - **Pacing:** reads are at least 250 ms apart, and the gap is never shorter than the last read
   took, so the OCR worker is busy at most half the time.
 - **Small lines:** lines thinner than 14 px on screen aren't recognised in live mode (the dev panel

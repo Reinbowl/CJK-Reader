@@ -13,7 +13,9 @@ uv run tools/prepare_models.py [--fp32] # download pinned models, verify sha256,
 npm test                                # both Node test suites
 node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
-npm run e2e                             # Playwright, headless Chromium, fake camera (~25 s)
+npm run e2e                             # Playwright, headless Chromium, fake camera (~45 s)
+E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, pan, tremor, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
 uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar  # regenerate one test image
@@ -57,6 +59,10 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - `cjkStats.labels` (lines, labels, crowded, overlaps, min/max size) is what the e2e checks read.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.
 - **Position contract between the two halves:** each OCR line has `chars: [{c, x, y}]`, one entry per code point of `text`. Each reading unit `{i, n, parts, roman}` indexes code points of that same text, and `app.js` places a label at `line.chars.slice(u.i, u.i + u.n)`. So reading code must keep the code-point count unchanged. `fixDash` (ー→一) swaps one character for one character.
+- **One read at a time:** every session run and creation in `ocr-worker.js` goes through `serial()`.
+  - Messages keep arriving mid-read (a snap during a live read, a language switch). Interleaved runs break the WebGPU backend: "Failed to download data from buffer" on iOS, and a hang on SwiftShader.
+  - A `cancel` message (sent by `readStill`) makes earlier reads stop at their next check, through `runOCR`'s `stop` option. They reject with `cancelled: true`, which `app.js` ignores.
+  - If a WebGPU run fails anyway, `toWasm()` rebuilds every session on WASM from the cached model bytes and posts a `backend` event.
 - **Backend:** `ocr-worker.js` creates each session with exactly one backend, and with `allow_spinning` off unless `?spin=1`. It reports which backend actually ran: WebGPU falls back to WASM with a `fallback` reason rather than silently.
 - **Settings:** `ep`, `threads`, `spin` and `debug` come from the URL switch or, failing that, from `localStorage.dev`. That's written by the dev panel, opened with three taps on `#status`, because home-screen apps take no URL switches.
 - **iOS status bar:** `apple-mobile-web-app-status-bar-style` must stay `black`. With `black-translucent`, iOS home-screen apps get a window one status bar shorter than the screen, pinned to the top. That leaves an unpaintable black strip at the bottom, which CSS can't fix.
