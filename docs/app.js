@@ -18,13 +18,14 @@ const LIVE_DET = Number(params.get("det")) || 640; // detector input, longest si
 const STILL_DET = 960;
 const LIVE_MAX = 1280, STILL_MAX = 1920; // captured image, longest side (recogniser crops come from this)
 const MODEL = { zh: "zhja", ja: "zhja", ko: "ko" };
-// Labels are drawn at LABEL_SCALE × the line's thickness and not at all below MIN_LABEL px, so live
-// mode doesn't recognise lines thinner than MIN_LINE px on screen.
-const LABEL_SCALE = 0.45, MIN_LABEL = 9, MIN_LINE = MIN_LABEL / LABEL_SCALE;
+// Labels: LABEL_SCALE × the line's thickness, between MIN_LABEL and MAX_LABEL px. Live mode doesn't
+// recognise lines thinner than MIN_LINE px on screen (dev panel: 10/14/20).
+const LABEL_SCALE = 0.45, MIN_LABEL = 8, MAX_LABEL = 28;
+const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
 // What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug.
-const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null });
+const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null });
 
 let lang = (() => {
   try { const saved = localStorage.getItem("lang"); if (MODEL[saved]) return saved; } catch {}
@@ -140,15 +141,18 @@ async function read(image, detLimit, minLineH = 0) {
 // ---------- motion gate (live mode) ----------
 // Every GATE_MS the on-screen part of the video is shrunk to a grey thumbnail THUMB_W px wide,
 // normalised (mean 0, sd 1) so exposure changes don't count, and compared with the previous one
-// (motion) and with the one taken when the overlay's frame was read (drift). Reading starts once the
-// view has been still for SETTLE samples and has changed since the last read; while the camera
-// moves the overlay fades out, and small drift moves it along with the text.
-const GATE_MS = 100, THUMB_W = 36, SETTLE = 3, SEARCH = 3;
-const MOVE_PX = 0.5, MOVE_ERR = 0.25; // per sample: thumbnail px, mean abs difference in sd units
-const CHANGE_PX = 1, CHANGE_ERR = 0.2; // since the last read
+// (motion) and with the one taken when the overlay's frame was read (drift).
+// - A fast move (or a different scene) fades the overlay out.
+// - Otherwise the overlay follows the drift, so hand tremor doesn't hide the labels.
+// - A read starts once the view has been steady for SETTLE samples and has drifted more than
+//   CHANGE_PX or shows something else.
+// "Same scene" is judged against the noise seen while steady: big sharp text leaves more residue
+// after a sub-pixel shift than a soft scene, and the tolerance grows with it.
+const GATE_MS = 100, THUMB_W = 40, SEARCH = 6, SETTLE = 2;
+const FAST_PX = 2, STEADY_PX = 0.8, CHANGE_PX = 3; // thumbnail px (per sample for the first two)
 const thumbCanvas = document.createElement("canvas");
 const thumbCtx = thumbCanvas.getContext("2d", { willReadFrequently: true });
-const gate = { state: "moving", still: 0, prev: null, read: null, motion: null, drift: null, timer: 0 };
+const gate = { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null, timer: 0 };
 
 function thumbnail() {
   const { sx, sy, sw, sh } = visibleRect(video.videoWidth, video.videoHeight, "cover");
@@ -197,32 +201,38 @@ function sample() {
   const cur = thumbnail();
   const m = (gate.motion = compare(gate.prev, cur));
   gate.prev = cur;
-  const moving = !m || Math.hypot(m.dx, m.dy) > MOVE_PX || m.err > MOVE_ERR;
-  gate.still = moving ? 0 : gate.still + 1;
+  const same = (c) => c && c.err < 2 * gate.noise + 0.1;
+  const speed = m ? Math.hypot(m.dx, m.dy) : Infinity;
+  const fast = (gate.fast = !same(m) || speed > FAST_PX);
+  const steady = !fast && speed < STEADY_PX;
+  if (steady) gate.noise = Math.min(0.3, Math.max(0.03, gate.noise + 0.2 * (m.err - gate.noise)));
+  gate.still = steady ? gate.still + 1 : 0;
   const d = (gate.drift = compare(gate.read, cur));
-  const same = d && d.err < CHANGE_ERR; // still the scene the overlay was read from, maybe shifted
-  gate.state = gate.still < SETTLE ? "moving" : !same || Math.hypot(d.dx, d.dy) > CHANGE_PX ? "ready" : "idle";
-  const show = !moving && same;
+  const keep = same(d); // still the scene the overlay was read from, maybe shifted
+  gate.state = gate.still < SETTLE ? "moving" : !keep || Math.hypot(d.dx, d.dy) > CHANGE_PX ? "ready" : "idle";
+  const show = !fast && keep;
   overlay.classList.toggle("faded", !show);
   if (show) {
     const k = view.clientWidth / cur.w;
     overlay.style.transform = `translate(${d.dx * k}px, ${d.dy * k}px)`;
   }
   stats.gate = gate.state;
+  stats.fast = fast;
   if (DEBUG) debugReadout();
 }
 
 function startGate() {
   clearInterval(gate.timer);
-  Object.assign(gate, { state: "moving", still: 0, prev: null, read: null, motion: null, drift: null });
+  Object.assign(gate, { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null });
   overlay.style.transform = "";
   gate.timer = setInterval(sample, GATE_MS);
 }
 
-function stopGate() {
+// keep: leave the overlay where it is (the shutter keeps the live labels up while re-reading).
+function stopGate(keep = false) {
   clearInterval(gate.timer);
   overlay.classList.remove("faded");
-  overlay.style.transform = "";
+  if (!keep) overlay.style.transform = "";
 }
 
 // ---------- drawing ----------
@@ -242,86 +252,172 @@ function labelFor(unit, l) {
   return unit.parts.some((p) => p.rt) ? unit.roman : "";
 }
 
+const font = (px) => `600 ${px}px system-ui, -apple-system, sans-serif`;
+const LABEL_GAP = 0.35; // em between neighbouring labels in a row
+
+// Centres x for labels of widths w that want to sit at t (in order along the line), as close to t as
+// possible without overlapping: least squares under x[i+1] - x[i] >= (w[i] + w[i+1]) / 2 + gap,
+// which is an isotonic regression of t minus the minimum offsets (pool adjacent violators).
+function spread(t, w, gap) {
+  const o = [0];
+  for (let i = 1; i < t.length; i++) o[i] = o[i - 1] + (w[i - 1] + w[i]) / 2 + gap;
+  const blocks = [];
+  t.forEach((ti, i) => {
+    blocks.push({ sum: ti - o[i], n: 1 });
+    while (blocks.length > 1 && blocks.at(-2).sum / blocks.at(-2).n >= blocks.at(-1).sum / blocks.at(-1).n) {
+      const b = blocks.pop();
+      blocks.at(-1).sum += b.sum;
+      blocks.at(-1).n += b.n;
+    }
+  });
+  const x = [];
+  for (const b of blocks) for (let k = 0; k < b.n; k++) x.push(b.sum / b.n + o[x.length]);
+  return x;
+}
+
+// Do two convex polygons (screen points) overlap by more than a pixel? Separating axis test.
+function overlaps(p, q) {
+  for (const poly of [p, q]) {
+    for (let i = 0; i < poly.length; i++) {
+      const [x1, y1] = poly[i], [x2, y2] = poly[(i + 1) % poly.length];
+      const nx = y1 - y2, ny = x2 - x1, n = Math.hypot(nx, ny) || 1;
+      const a = p.map(([x, y]) => (x * nx + y * ny) / n), b = q.map(([x, y]) => (x * nx + y * ny) / n);
+      if (Math.max(...a) < Math.min(...b) + 1 || Math.max(...b) < Math.min(...a) + 1) return false;
+    }
+  }
+  return true;
+}
+
+// Rough overlap area (of the bounding boxes), to pick the least bad spot when no spot is clear.
+function overlapArea(p, q) {
+  const x = (pts) => pts.map((v) => v[0]), y = (pts) => pts.map((v) => v[1]);
+  const w = Math.min(Math.max(...x(p)), Math.max(...x(q))) - Math.max(Math.min(...x(p)), Math.min(...x(q)));
+  const h = Math.min(Math.max(...y(p)), Math.max(...y(q))) - Math.max(Math.min(...y(p)), Math.min(...y(q)));
+  return Math.max(0, w) * Math.max(0, h);
+}
+
+// Each horizontal line gets one row of labels, its font scaled to that line (big text, big labels)
+// and shrunk until the row fits the line's length; labels are then spread so none overlap. The row
+// goes above the line, or below if that is clear of other lines and rows, or shrinks to fit the
+// gap; if nothing fits it goes on the side that covers least, so every reading is shown. Vertical
+// lines get their labels to the right of each character, like furigana.
 function draw(result, map) {
   sizeCanvas(overlay);
   const P = (x, y) => [map.ox + x * map.s, map.oy + y * map.s];
-  // Lines too small to label (live mode doesn't read them): a faint dashed hint to move closer.
-  octx.setLineDash([4, 4]);
-  octx.lineWidth = 1;
-  octx.strokeStyle = "rgba(255,255,255,0.4)";
-  for (const box of result.skipped) {
+  const outline = (box) => {
     octx.beginPath();
     box.forEach(([x, y], i) => (i ? octx.lineTo : octx.moveTo).call(octx, ...P(x, y)));
     octx.closePath();
     octx.stroke();
-  }
+  };
+  // Lines too small to label (live mode doesn't read them): a faint dashed hint to move closer.
+  octx.setLineDash([4, 4]);
+  octx.lineWidth = 1;
+  octx.strokeStyle = "rgba(255,255,255,0.4)";
+  result.skipped.forEach(outline);
   octx.setLineDash([]);
-  result.lines.forEach((line, k) => {
-    const note = result.notes[k];
-    octx.beginPath();
-    line.box.forEach(([x, y], i) => (i ? octx.lineTo : octx.moveTo).call(octx, ...P(x, y)));
-    octx.closePath();
-    octx.lineWidth = 1.5;
-    octx.strokeStyle = "rgba(255,255,255,0.75)";
-    octx.stroke();
-    if (!note) return;
+  octx.lineWidth = 1.5;
+  octx.strokeStyle = "rgba(255,255,255,0.75)";
+  result.lines.forEach((line) => outline(line.box));
 
-    const bl = Math.hypot(line.B[0], line.B[1]) || 1;
-    const bn = [line.B[0] / bl, line.B[1] / bl]; // unit vector "down" across the line
-    const thick = bl * map.s;
-    const len = Math.hypot(line.A[0], line.A[1]) * map.s;
-    const angle = line.vertical ? 0 : Math.atan2(line.A[1], line.A[0]);
+  const texts = result.lines.map((line) => line.box.map(([x, y]) => P(x, y)));
+  const rows = []; // label rows placed so far (screen polygons)
+  const drawn = { lines: 0, labels: 0, crowded: 0, overlaps: 0, min: Infinity, max: 0 };
+  octx.textBaseline = "middle";
+  // Biggest text first: its row is the hardest to place.
+  const order = result.lines.map((_, k) => k).sort((a, b) => Math.hypot(...result.lines[b].B) - Math.hypot(...result.lines[a].B));
+  for (const k of order) {
+    const line = result.lines[k], note = result.notes[k];
+    if (!note) continue;
     const labels = note.units
-      .map((u) => ({ u, text: labelFor(u, result.lang), cs: line.chars.slice(u.i, u.i + u.n) }))
+      .map((u) => ({ text: labelFor(u, result.lang), cs: line.chars.slice(u.i, u.i + u.n) }))
       .filter((l) => l.text && l.cs.length);
-    if (!labels.length) return;
-
-    // Largest font (up to 28px) at which each label fits over its own characters.
-    const font = (px) => `600 ${px}px system-ui, -apple-system, sans-serif`;
+    if (!labels.length) continue;
+    const bl = Math.hypot(...line.B) || 1, al = Math.hypot(...line.A) || 1;
+    const bn = [line.B[0] / bl, line.B[1] / bl], an = [line.A[0] / al, line.A[1] / al]; // across, along
+    const thick = bl * map.s, len = al * map.s;
+    const base = Math.min(MAX_LABEL, Math.max(MIN_LABEL, thick * LABEL_SCALE));
     octx.font = font(100);
-    // Character pitch: median gap between neighbouring labelled characters (digits/latin are narrower).
-    const labelled = new Array(line.chars.length).fill(false);
-    for (const { u } of labels) labelled.fill(true, u.i, Math.min(u.i + u.n, line.chars.length));
-    const gaps = [];
-    for (let k = 0; k + 1 < line.chars.length; k++) {
-      const a = line.chars[k], b = line.chars[k + 1];
-      if (labelled[k] && labelled[k + 1]) gaps.push(Math.hypot(b.x - a.x, b.y - a.y) * map.s);
+    const w100 = labels.map((l) => octx.measureText(l.text).width);
+    const centres = labels.map((l) => P(l.cs.reduce((a, c) => a + c.x, 0) / l.cs.length, l.cs.reduce((a, c) => a + c.y, 0) / l.cs.length));
+    drawn.lines++;
+
+    if (line.vertical) {
+      const size = base;
+      octx.font = font(size);
+      for (const [i, l] of labels.entries()) {
+        const [x, y] = centres[i];
+        const w = (w100[i] * size) / 100;
+        octx.fillStyle = "rgba(0,0,0,0.6)";
+        octx.fillRect(x + thick / 2 + 1, y - size * 0.65, w + 6, size * 1.3);
+        octx.fillStyle = "#ffe066";
+        octx.textAlign = "left";
+        octx.fillText(l.text, x + thick / 2 + 4, y);
+      }
+      Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, size), max: Math.max(drawn.max, size) });
+      continue;
     }
-    gaps.sort((a, b) => a - b);
-    const pitch = gaps.length ? gaps[gaps.length >> 1] : len / Math.max(1, line.chars.length);
-    let size = Math.min(28, thick * LABEL_SCALE);
-    if (!line.vertical) for (const l of labels) size = Math.min(size, (100 * pitch * l.u.n) / octx.measureText(l.text).width);
-    if (size < MIN_LABEL) return; // too small to fit legibly: move closer, or read it in the sheet
-    octx.font = font(size);
-    octx.textBaseline = "middle";
-    // Horizontal text: labels on a band above the line. Vertical text: to the right, like furigana.
-    const off = line.vertical ? thick / 2 + 4 : thick / 2 + size * 0.75;
-    if (!line.vertical) {
-      const [cx, cy] = P((line.box[0][0] + line.box[2][0]) / 2, (line.box[0][1] + line.box[2][1]) / 2);
-      octx.save();
-      octx.translate(cx - bn[0] * off, cy - bn[1] * off);
-      octx.rotate(angle);
-      octx.fillStyle = "rgba(0,0,0,0.6)";
-      octx.fillRect(-len / 2, -size * 0.7, len, size * 1.4);
-      octx.restore();
+
+    // Row font: the line's own size, shrunk so all labels fit along the line (plus half a thickness
+    // at each end) and across the screen; never below MIN_LABEL, where the row may run past the line.
+    const [cx, cy] = P((line.box[0][0] + line.box[2][0]) / 2, (line.box[0][1] + line.box[2][1]) / 2);
+    const t = centres.map(([x, y]) => (x - cx) * an[0] + (y - cy) * an[1]);
+    const need = w100.reduce((a, b) => a + b, 0) / 100 + LABEL_GAP * (labels.length - 1);
+    const fit = Math.max(MIN_LABEL, Math.min(base, Math.min(len + thick, view.clientWidth - 8) / need));
+    const layout = (size, side) => {
+      const w = w100.map((v) => (v * size) / 100);
+      let x = spread(t, w, LABEL_GAP * size);
+      let lo = Math.min(...x.map((xi, i) => xi - w[i] / 2)) - 4, hi = Math.max(...x.map((xi, i) => xi + w[i] / 2)) + 4;
+      // Keep the row on screen when the line runs off an edge (rows of near-horizontal lines only).
+      if (Math.abs(an[0]) > 0.7) {
+        const sx0 = cx + an[0] * (an[0] > 0 ? lo : hi), sx1 = cx + an[0] * (an[0] > 0 ? hi : lo);
+        const d = (sx0 < 2 ? 2 - sx0 : sx1 > view.clientWidth - 2 ? view.clientWidth - 2 - sx1 : 0) / an[0];
+        x = x.map((xi) => xi + d);
+        lo += d;
+        hi += d;
+      }
+      const off = side * (thick / 2 + size * 0.75); // along bn: negative is above the line
+      const at = (u, v) => [cx + an[0] * u + bn[0] * (off + v), cy + an[1] * u + bn[1] * (off + v)];
+      const poly = [at(lo, -size * 0.7), at(hi, -size * 0.7), at(hi, size * 0.7), at(lo, size * 0.7)];
+      const others = texts.filter((_, j) => j !== k);
+      const clear = !others.some((b) => overlaps(poly, b)) && !rows.some((r) => overlaps(poly, r));
+      // Covering text is worse than covering another row of labels.
+      const cost = () => others.reduce((a, b) => a + 2 * overlapArea(poly, b), 0) + rows.reduce((a, r) => a + overlapArea(poly, r), 0);
+      return { size, w, x, lo, hi, at, poly, clear, cost };
+    };
+    let row = null;
+    for (let size = fit; !row && size >= MIN_LABEL; size = size > MIN_LABEL && size * 0.85 < MIN_LABEL ? MIN_LABEL : size * 0.85) {
+      row = [layout(size, -1), layout(size, 1)].find((r) => r.clear);
     }
-    for (const { text, cs } of labels) {
-      let [x, y] = P(cs.reduce((a, c) => a + c.x, 0) / cs.length, cs.reduce((a, c) => a + c.y, 0) / cs.length);
-      x -= bn[0] * off; y -= bn[1] * off;
+    if (!row) {
+      row = [layout(MIN_LABEL, -1), layout(MIN_LABEL, 1)].sort((a, b) => a.cost() - b.cost())[0];
+      drawn.crowded++;
+    }
+    rows.push(row.poly);
+
+    const angle = Math.atan2(an[1], an[0]);
+    const [bx, by] = row.at((row.lo + row.hi) / 2, 0);
+    octx.save();
+    octx.translate(bx, by);
+    octx.rotate(angle);
+    octx.fillStyle = "rgba(0,0,0,0.6)";
+    octx.fillRect(-(row.hi - row.lo) / 2, -row.size * 0.7, row.hi - row.lo, row.size * 1.4);
+    octx.restore();
+    octx.font = font(row.size);
+    octx.textAlign = "center";
+    octx.fillStyle = "#ffe066";
+    for (const [i, l] of labels.entries()) {
+      const [x, y] = row.at(row.x[i], 0);
       octx.save();
       octx.translate(x, y);
       octx.rotate(angle);
-      if (line.vertical) {
-        const w = octx.measureText(text).width;
-        octx.fillStyle = "rgba(0,0,0,0.6)";
-        octx.fillRect(-3, -size * 0.65, w + 6, size * 1.3);
-      }
-      octx.textAlign = line.vertical ? "left" : "center";
-      octx.fillStyle = "#ffe066";
-      octx.fillText(text, 0, 0);
+      octx.fillText(l.text, 0, 0);
       octx.restore();
+      if (i && row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;
     }
-  });
+    Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, row.size), max: Math.max(drawn.max, row.size) });
+  }
+  stats.labels = drawn;
 }
 
 // Fill the list of lines with ruby text; the list button (#list) shows it.
@@ -380,7 +476,7 @@ function debugReadout() {
   const s = getComputedStyle(probe);
   const f = (c) => (c ? `${c.dx.toFixed(2)},${c.dy.toFixed(2)} e${c.err.toFixed(2)}` : "-");
   $("#debug").textContent = [
-    `gate ${gate.state} still ${gate.still} motion ${f(gate.motion)} drift ${f(gate.drift)}`,
+    `gate ${gate.state}${gate.fast ? " fast" : ""} still ${gate.still} noise ${gate.noise.toFixed(2)} motion ${f(gate.motion)} drift ${f(gate.drift)}`,
     `reads ${stats.reads} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
     `inner ${innerWidth}×${innerHeight} screen ${screen.width}×${screen.height} vv ${visualViewport?.height.toFixed(0)} view ${view.clientHeight}`,
     `safe ${[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(parseFloat).join("/")} standalone ${navigator.standalone ?? matchMedia("(display-mode: standalone)").matches}`,
@@ -407,6 +503,7 @@ function showDev() {
   $("#devbar").replaceChildren(
     opt("WASM", "ep", "wasm", EP === "wasm"), opt("WebGPU", "ep", "webgpu", EP === "webgpu"),
     ...[0, 1, 2, 4].map((n) => opt(n ? `${n} thr` : "auto thr", "threads", n || null, threads === n)),
+    ...[10, 14, 20].map((n) => opt(`line ≥${n}px`, "minline", n === 14 ? null : n, MIN_LINE === n)),
     opt(SPIN ? "spin on" : "spin off", "spin", SPIN ? 0 : 1, SPIN),
   );
   debugReadout();
@@ -490,10 +587,12 @@ async function liveLoop(token) {
 }
 
 // Read a still image (frozen camera frame or picked photo) at higher resolution and list the lines.
-async function readStill(src, w, h, fit) {
+// keep: the shutter froze the live view; its labels stay up until the new read is drawn.
+async function readStill(src, w, h, fit, keep = false) {
+  keep &&= mode === "live" && !overlay.classList.contains("faded");
   setMode("still");
   loopToken++;
-  stopGate();
+  stopGate(keep);
   setShutter("Back to live camera", "Live");
   const { image, map } = grab(src, w, h, STILL_MAX, fit);
   const sctx = sizeCanvas(still);
@@ -502,11 +601,12 @@ async function readStill(src, w, h, fit) {
   sctx.drawImage(grabCanvas, map.ox, map.oy, image.width * map.s, image.height * map.s);
   still.hidden = false;
   lastStill = { src, w, h, fit };
-  sizeCanvas(overlay);
+  if (!keep) sizeCanvas(overlay);
   setStatus("Reading…");
   try {
     const r = await read(image, STILL_DET);
     if (mode !== "still") return;
+    overlay.style.transform = "";
     draw(r, map);
     fillSheet(r);
     setStatus(timing(r));
@@ -521,7 +621,7 @@ $("#list").onclick = () => toggleSheet();
 $("#shutter").onclick = () => {
   if (mode === "live" && video.videoWidth) {
     video.pause();
-    readStill(video, video.videoWidth, video.videoHeight, "cover");
+    readStill(video, video.videoWidth, video.videoHeight, "cover", true);
   } else {
     live().catch((e) => setStatus(e, true));
   }

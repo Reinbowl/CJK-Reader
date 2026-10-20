@@ -34,10 +34,10 @@ const base = `http://localhost:${server.address().port}/`;
 // (608×1080: the fake device crops anything taller to the 1080 px the app asks for.)
 const W = 608, H = 1080, FPS = 15;
 
-// The image scaled to fitW px wide, centred on its own corner colour; dx pans it sideways. The phone
-// viewport shows the middle ~500 px of the frame's width.
-function frame(png, dx = 0, fitW = W) {
-  const s = fitW / png.width, ih = png.height * s, top = (H - ih) / 2, left = (W - fitW) / 2 + dx;
+// The image scaled to fitW px wide, centred on its own corner colour and moved by (dx, dy). The
+// phone viewport shows the middle ~500 px of the frame's width.
+function frame(png, dx = 0, fitW = W, dy = 0) {
+  const s = fitW / png.width, ih = png.height * s, top = (H - ih) / 2 + dy, left = (W - fitW) / 2 + dx;
   const rgb = new Uint8Array(W * H * 3);
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -73,11 +73,14 @@ function writeY4M(name, frames) {
 const image = (name) => PNG.sync.read(readFileSync(join(root, `test/images/${name}.png`)));
 const repeat = (f, n) => Array(n).fill(f);
 const zh = image("zh");
-const pan = [...repeat(frame(zh), 20), ...Array.from({ length: 15 }, (_, k) => frame(zh, 14 * (k + 1))), ...repeat(frame(zh, 210), 30)];
+const pan = [...repeat(frame(zh), 20), ...Array.from({ length: 8 }, (_, k) => frame(zh, 30 * (k + 1))), ...repeat(frame(zh, 240), 30)];
+let seed = 7;
+const jitter = () => Math.round(8 * ((seed = (seed * 16807) % 2147483647) / 2147483647) - 4); // -4..4 px
 const clips = {
   static: writeY4M("static", [frame(zh)]),
   calendar: writeY4M("calendar", [frame(image("calendar"), 0, 490)]),
-  pan: writeY4M("pan", pan), // 1.3 s still, 1 s panning right, 2 s still, then a jump back
+  pan: writeY4M("pan", pan), // 1.3 s still, 0.5 s fast pan right, 2 s still, then a jump back
+  tremor: writeY4M("tremor", Array.from({ length: 45 }, () => frame(zh, jitter(), 1100, jitter()))), // big text, shaky hand
 };
 
 // CJK fonts for the screenshots, if tools/make_test_images.py's Noto font is in .cache/fonts.
@@ -180,6 +183,9 @@ async function staticScene() {
   const good = listed.filter((g) => Math.min(...want.map((w) => pieceErr(g.replace(/\s/g, ""), w))) <= 0.1);
   console.log(`    still read: ${listed.join(" | ")}`);
   check(good.length >= 4, `still read: ${good.length} of ${listed.length} lines are (pieces of) the sign's lines`);
+  const lab = (await stats(page)).labels;
+  console.log(`    labels: ${JSON.stringify(lab)}`);
+  check(lab.lines === listed.length && lab.overlaps === 0, `every line has its readings drawn (${lab.lines}/${listed.length}), none overlapping`);
   const sheetHidden = () => page.evaluate(() => document.querySelector("#sheet").hidden);
   check(await sheetHidden(), "the list stays closed after the shutter");
   await shot(page, "static-still");
@@ -233,32 +239,52 @@ async function calendarScene() {
   const t = await stats(page);
   console.log(`    still read: ${t.lines} lines, ${t.skipped} small, det ${t.ms.det.toFixed(0)} ms rec ${t.ms.rec.toFixed(0)} ms`);
   check(t.skipped === 0 && t.lines >= s.lines, "still mode skips nothing");
+  const withReading = await page.evaluate(() => document.querySelectorAll("#lines li:has(rt)").length);
+  console.log(`    labels: ${JSON.stringify(t.labels)}`);
+  check(t.labels.lines === withReading && t.labels.overlaps === 0, `every line with a reading is labelled (${t.labels.lines}/${withReading}), none overlapping`);
   await shot(page, "calendar-still");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
 
+// What the gate and overlay do over `ms`, sampled every 50 ms.
+const watch = (page, ms) => page.evaluate(async (ms) => {
+  const out = [];
+  for (const t0 = performance.now(); performance.now() - t0 < ms; await new Promise((r) => setTimeout(r, 50))) {
+    const s = self.cjkStats;
+    out.push({ gate: s.gate, fast: s.fast, reads: s.reads, faded: document.querySelector("#overlay").classList.contains("faded") });
+  }
+  return out;
+}, ms);
+
 async function panScene() {
-  console.log("-- panning: no reads while moving, overlay fades, one read once settled");
+  console.log("-- fast pan: no reads while moving, overlay fades, one read once settled");
   const { browser, page, errors } = await open(clips.pan);
   await startLive(page);
-  // Sample what the gate and overlay do over two loops of the clip (4.3 s each).
-  const log = await page.evaluate(async () => {
-    const out = [];
-    const t0 = performance.now();
-    while (performance.now() - t0 < 9000) {
-      const s = self.cjkStats;
-      out.push({ t: performance.now() - t0, gate: s.gate, reads: s.reads, faded: document.querySelector("#overlay").classList.contains("faded") });
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    return out;
-  });
+  // Two loops of the clip (3.9 s each).
+  const log = await watch(page, 9000);
   const reads = log.at(-1).reads - log[0].reads;
-  const movingFaded = log.filter((e) => e.gate === "moving");
-  console.log(`    ${reads} reads in 9 s; moving ${movingFaded.length} samples, faded while moving ${movingFaded.filter((e) => e.faded).length}`);
-  check(movingFaded.length > 10, "gate sees the pan as moving");
-  check(movingFaded.filter((e) => e.faded).length >= movingFaded.length * 0.8, "overlay fades while moving");
+  const fast = log.filter((e) => e.fast);
+  console.log(`    ${reads} reads in 9 s; fast ${fast.length} samples, faded while fast ${fast.filter((e) => e.faded).length}`);
+  check(fast.length >= 5, "gate sees the pan as a fast move");
+  check(fast.filter((e) => e.faded).length >= fast.length * 0.8, "overlay fades during the fast move");
   check(reads >= 2 && reads <= 8, `reads only after settling (${reads} in 9 s; continuous reading would be ~30)`);
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function tremorScene() {
+  console.log("-- big text, shaky hand: labels stay up and follow, few re-reads");
+  const { browser, page, errors } = await open(clips.tremor);
+  await startLive(page);
+  const log = await watch(page, 6000);
+  const reads = log.at(-1).reads - log[0].reads;
+  const shown = log.filter((e) => !e.faded).length / log.length;
+  const s = await stats(page);
+  console.log(`    ${reads} re-reads in 6 s, labels shown ${(100 * shown).toFixed(0)} % of the time, ${s.lines} lines`);
+  await shot(page, "tremor-live");
+  check(shown >= 0.8, "labels stay up through the tremor");
+  check(reads <= 2, "tremor doesn't trigger re-reads");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -267,6 +293,7 @@ try {
   await staticScene();
   await calendarScene();
   await panScene();
+  await tremorScene();
 } catch (e) {
   console.log("FAIL", e);
   failed = true;

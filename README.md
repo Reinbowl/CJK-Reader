@@ -26,13 +26,29 @@ Live mode doesn't read every frame:
 
 - **Motion gate:** every 100 ms, `app.js` shrinks the view to a small grey thumbnail and compares it
   with the previous one, and with the one from the last read.
-  - While the camera moves, nothing is read and the labels fade out.
-  - Small drift moves the labels along with the text.
-  - A read starts once the view has been still for about 0.3 s and differs from the last read.
+  - A fast move (or a new scene) fades the labels out, and nothing is read.
+  - Slower movement and hand tremor move the labels along with the text instead.
+  - A read starts once the view has been steady for about 0.2 s and has drifted about 30 px or
+    changed since the last read.
+  - What counts as "the same scene" adapts to how much the image jitters while steady. Big, sharp
+    text close to the camera jitters more than a distant sign.
 - **Pacing:** reads are at least 250 ms apart, and the gap is never shorter than the last read
   took, so the OCR worker is busy at most half the time.
-- **Small lines:** lines too thin to carry a legible label (under about 20 px on screen) aren't
-  recognised in live mode. They get a dashed outline; move closer or freeze to read them.
+- **Small lines:** lines thinner than 14 px on screen aren't recognised in live mode (the dev panel
+  switches between 10, 14 and 20 px). They get a dashed outline; move closer or freeze to read them.
+
+Labels:
+
+- **Size:** each line gets one row of labels, sized from that line's own characters, so a big
+  headline gets big pinyin and small print gets small pinyin. The row font then shrinks until the
+  whole row fits the line (and the screen), but never below 8 px.
+- **Position:** each label sits as close as it can to its own characters. Labels are only pushed
+  sideways as far as needed to stop them overlapping (a least-squares fit).
+- **Crowding:** the row goes above the line, or below if the space above is taken by other text or
+  another row, or shrinks to fit the gap. If nothing fits, it goes on the side that covers least, so
+  every reading is always shown.
+- **Freeze:** after the shutter, the live labels stay up while the frame is re-read at higher
+  resolution, then every line gets its readings, small ones included.
 
 Models: PaddleOCR's PP-OCRv6 (PP-OCRv5 for Korean, which v6 doesn't cover), in ONNX, with
 weights stored as int8.
@@ -128,7 +144,8 @@ skipped), and the backend actually in use. URL switches:
 | `debug` | off | `1` shows the motion gate's numbers and the viewport/safe-area sizes under the status bar |
 
 A home-screen app can't be given URL switches. Instead, **tap the status line three times** to open
-a dev panel with the debug readout and buttons for `ep`, `threads` and `spin`. The buttons reload
+a dev panel with the debug readout and buttons for `ep`, `threads`, the live-mode minimum line size
+and `spin`. The buttons reload
 the app, and the choices are saved on the device. A URL switch overrides the panel.
 
 Recognition time grows with the total width of the lines in view. Each crop is padded only to a
@@ -157,9 +174,9 @@ padding.
   read Hangul, and kanji-only text can't tell Chinese from Japanese.
 - **ー vs 一:** the recognizer sometimes reads 一 (one) as ー (long-vowel mark). `reading.js` fixes
   that from the surrounding characters.
-- **Label size:** each line's labels share one font size that has to fit over every syllable, so
-  live labels only appear once characters are roughly 25–30 px on screen. Freeze to read smaller
-  text in the list.
+- **Crowded text:** when a line's labels can't go above or below it without covering other text,
+  they're drawn at 8 px on the side that covers least, and can hide part of a neighbouring line.
+  The list (after the shutter) always shows every line in full.
 
 ## Sources and licenses
 

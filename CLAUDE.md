@@ -41,12 +41,20 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
 - **RPC:** `rpc()` in `app.js` matches replies by `id`. A worker message without an `id` is an event (download `progress`). A worker error comes back as `{id, error, where}`, where `where` is the `file.js:line` of the first stack frame, shown in the status bar because phones have no console.
 - **`ocr-core.js`** is pure JS on RGBA buffers. It has no DOM and takes `ort` as a parameter, so the Node tests run the exact code the browser does. It mirrors PaddleOCR's pre- and post-processing. `tools/ocr_ref.py` is the Python reference (OpenCV and pyclipper), so a change to detection or recognition should still match it. The models expect BGR, and `sampleBGR` swaps the channels.
   - One deliberate difference from PaddleOCR: recognizer crops are padded to `REC_MIN_W` (64), not 320, and batched by a column budget (`REC_COLS`). `ocr_ref.py` `recognize()` mirrors this, so keep the two in step.
-  - `runOCR`'s `minLineH` leaves thinner boxes unrecognised and returns them in `skipped`. Live mode passes `MIN_LINE / map.s`, which is derived from `draw()`'s label limits (`LABEL_SCALE`, `MIN_LABEL`).
+  - `runOCR`'s `minLineH` leaves thinner boxes unrecognised and returns them in `skipped`. Live mode passes `MIN_LINE / map.s`, where `MIN_LINE` (screen px, default 14) is a dev-panel setting (`minline`).
 - **Live loop (`app.js`):** reads are gated, not continuous.
-  - `sample()` runs every `GATE_MS` and compares normalised grey thumbnails (`thumbnail()`, `compare()` with a ±3 px shift search), setting `gate.state` to moving, ready or idle.
+  - `sample()` runs every `GATE_MS` and compares normalised grey thumbnails (`thumbnail()`, `compare()` with a ±`SEARCH` px shift search), setting `gate.state` to moving, ready or idle and `gate.fast`.
+  - "Same scene" means the residual after the best shift is under `2 × gate.noise + 0.1`. `gate.noise` is a running average of that residual while steady, so big sharp text tolerates more jitter.
+  - `FAST_PX` (per sample) fades the overlay. Below `STEADY_PX` for `SETTLE` samples the view counts as steady. A read happens once drift since the last read exceeds `CHANGE_PX`, or the scene changes.
   - `liveLoop` reads only in `ready`, with a duty-cycle gap (`MIN_GAP`, and at least the last read's duration).
-  - `#overlay` gets the `faded` class while moving, and a CSS translate for small drift.
-  - The thresholds (`MOVE_*`, `CHANGE_*`) are tuned on a phone with `?debug=1`.
+  - `#overlay` gets the `faded` class on fast moves, and otherwise a CSS translate that follows the drift.
+  - Tune the thresholds on a phone with the dev panel's readout. The e2e `pan` (fast) and `tremor` (big text, jitter) clips pin the behaviour.
+- **Labels (`draw()` in `app.js`):**
+  - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, clamped to `MIN_LABEL`..`MAX_LABEL`) and shrunk so the row fits the line and the screen.
+  - Labels are placed by `spread()`: an isotonic-regression least-squares fit, so labels never overlap within a row.
+  - Rows are placed biggest line first: above, else below, else smaller. `overlaps()` is a separating-axis test against other lines' boxes and placed rows. If nothing is clear, the side with the least `overlapArea` wins.
+  - Vertical lines get furigana-style labels to the right.
+  - `cjkStats.labels` (lines, labels, crowded, overlaps, min/max size) is what the e2e checks read.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.
 - **Position contract between the two halves:** each OCR line has `chars: [{c, x, y}]`, one entry per code point of `text`. Each reading unit `{i, n, parts, roman}` indexes code points of that same text, and `app.js` places a label at `line.chars.slice(u.i, u.i + u.n)`. So reading code must keep the code-point count unchanged. `fixDash` (ー→一) swaps one character for one character.
 - **Backend:** `ocr-worker.js` creates each session with exactly one backend, and with `allow_spinning` off unless `?spin=1`. It reports which backend actually ran: WebGPU falls back to WASM with a `fallback` reason rather than silently.
