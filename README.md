@@ -34,26 +34,31 @@ Live mode doesn't read every frame:
 - **Small lines:** lines too thin to carry a legible label (under about 20 px on screen) aren't
   recognised in live mode. They get a dashed outline; move closer or freeze to read them.
 
-Models: PP-OCRv5 mobile, converted to ONNX, with weights stored as int8.
+Models: PaddleOCR's PP-OCRv6 (PP-OCRv5 for Korean, which v6 doesn't cover), in ONNX, with
+weights stored as int8.
 
-| file | size | used for |
-|---|---|---|
-| `det.int8.onnx` | 1.3 MB | finding text lines (all languages) |
-| `rec_zhja.int8.onnx` + `dict_zhja.txt` | 4.4 MB | Simplified and Traditional Chinese, Japanese, English |
-| `rec_ko.int8.onnx` + `dict_ko.txt` | 3.6 MB | Korean, English |
+| file | model | size | used for |
+|---|---|---|---|
+| `det.int8.onnx` | PP-OCRv6 tiny detector | 0.6 MB | finding text lines (all languages) |
+| `rec_zhja.int8.onnx` + `dict_zhja.txt` | PP-OCRv6 small recognizer | 5.6 MB | Simplified and Traditional Chinese, Japanese, English |
+| `rec_ko.int8.onnx` + `dict_ko.txt` | PP-OCRv5 mobile Korean recognizer | 3.6 MB | Korean, English |
+
+PP-OCRv6's own tiny recognizer is faster, but it has no kana and is missing common traditional
+characters (請), so it can't serve Japanese or traditional Chinese. Its small detector is more
+accurate than tiny but about 4× the size and slower.
 
 "int8" here means **weight-only** quantization. Weights are stored as per-channel int8, and a
 `DequantizeLinear` node expands them back to float32 at load/run time. Files are about 4× smaller
-than fp32 (9.3 MB vs 34.7 MB), and recognition on the test images matches fp32 except for two
-dropped spaces. Compute stays float32, so the same files run on the WASM and WebGPU backends.
+than fp32 (9.8 MB vs 36.3 MB), and the character error rate on the test images stays within 0.015
+of fp32. Compute stays float32, so the same files run on the WASM and WebGPU backends.
 
 Downloads are lazy and cached by the service worker:
 
 - Core app: ~1 MB
 - ONNX Runtime WASM: 14 MB
-- Detector + current language's recognizer: 6–7 MB
+- Detector + current language's recognizer: 4–6 MB
 - Japanese dictionary (kuromoji): 18 MB, only when 日本語 is picked
-- ONNX Runtime WebGPU build: 27 MB, only with `?ep=webgpu`
+- ONNX Runtime WebGPU build: 27 MB, only when WebGPU is chosen and the device has a GPU adapter
 
 ## Layout
 
@@ -128,14 +133,15 @@ the app, and the choices are saved on the device. A URL switch overrides the pan
 
 Recognition time grows with the total width of the lines in view. Each crop is padded only to a
 multiple of 32 px (64 px minimum), not to PaddleOCR's 320 px, so short boxes such as calendar
-dates are cheap. The calendar page in `test/images` has 72 boxes:
+dates are cheap. The calendar page in `test/images` has 73 boxes:
 
-| desktop, WASM | detection | recognition |
+| desktop, WASM, 960 px | detection | recognition |
 |---|---|---|
-| 1 thread, 960 px | 530 ms | 1400 ms (4400 ms with 320 px padding) |
-| 4 threads, 960 px | | 530 ms (1690 ms with 320 px padding) |
+| 1 thread | 290 ms | 1680 ms |
+| 4 threads | | 660 ms (1920 ms with 320 px padding) |
 
-On an iPhone, 6 lines took about 300–500 ms and a calendar about 3000 ms before this change.
+On an iPhone, 6 lines took about 300–500 ms and a calendar about 3000 ms with PP-OCRv5 and 320 px
+padding.
 
 ## Known limitations
 
@@ -157,9 +163,9 @@ On an iPhone, 6 lines took about 300–500 ms and a calendar about 3000 ms befor
 
 ## Sources and licenses
 
-- **PP-OCRv5 models:** PaddleOCR, Apache-2.0. ONNX conversions are from Hugging Face
-  `webnn/PP-OCRv5-ONNX` and `monkt/paddleocr-onnx`, pinned to commits in
-  `tools/prepare_models.py`.
+- **PP-OCRv6 models:** PaddleOCR, Apache-2.0, from Hugging Face `PaddlePaddle/PP-OCRv6_tiny_det_onnx`
+  and `PaddlePaddle/PP-OCRv6_small_rec_onnx`. **PP-OCRv5 Korean recognizer:** PaddleOCR, Apache-2.0,
+  ONNX conversion from `monkt/paddleocr-onnx`. All pinned to commits in `tools/prepare_models.py`.
 - **onnxruntime-web:** MIT.
 - **pinyin-pro:** MIT.
 - **wanakana:** MIT.

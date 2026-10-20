@@ -4,7 +4,7 @@
 // App code is revalidated with the server on every load, so deploys show up without any version
 // bump. Models/vendor files are large and served cache-first: bump ASSETS when they change.
 const SHELL = "cjk-reader-shell-v2";
-const ASSETS = "cjk-reader-v1"; // the v1 worker's cache name: keeps already-downloaded models
+const ASSETS = "cjk-reader-v2"; // v2: PP-OCRv6 models
 const SHELL_FILES = [
   "./", "index.html", "style.css", "app.js", "ocr-worker.js", "ocr-core.js", "reading-worker.js", "reading.js",
   "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png",

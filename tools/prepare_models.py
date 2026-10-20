@@ -1,4 +1,8 @@
-"""Download the PP-OCRv5 mobile ONNX models and write int8 weight-only versions to docs/models.
+"""Download the OCR models (ONNX) and write int8 weight-only versions to docs/models.
+
+  det       PP-OCRv6 tiny detector, for every language
+  rec_zhja  PP-OCRv6 small recogniser: Chinese (simplified and traditional), Japanese, English
+  rec_ko    PP-OCRv5 mobile Korean recogniser (PP-OCRv6 has no Korean)
 
 Weight-only int8: every Conv/ConvTranspose/MatMul weight is stored as per-channel symmetric
 int8 plus a float scale, and a DequantizeLinear node turns it back into float32 at runtime.
@@ -16,7 +20,8 @@ from pathlib import Path
 
 import numpy as np
 import onnx
-from onnx import TensorProto, helper, numpy_helper
+import yaml
+from onnx import TensorProto, helper, numpy_helper, version_converter
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "docs" / "models"
@@ -26,15 +31,16 @@ HF = "https://huggingface.co"
 # Pinned to exact repo commits + sha256 so a changed upstream file fails loudly.
 SOURCES = {
     "det.onnx": (
-        f"{HF}/webnn/PP-OCRv5-ONNX/resolve/006b4419a415072fbb16a1d7d0d8548f789a8fae/ch_PP-OCRv5_det.onnx",
-        "d7fe3ea74652890722c0f4d02458b7261d9f5ae6c92904d05707c9eb155c7924",
+        f"{HF}/PaddlePaddle/PP-OCRv6_tiny_det_onnx/resolve/2ba1506c0380b8f0b03dd142459aac66d4421f6c/inference.onnx",
+        "193bab7a04fca699a6c82e6abb5b81bdb28177f0abd4062552b04908dafb19f8",
     ),
     "rec_zhja.onnx": (
-        f"{HF}/webnn/PP-OCRv5-ONNX/resolve/006b4419a415072fbb16a1d7d0d8548f789a8fae/ch_PP-OCRv5_rec.onnx",
-        "bf66820f48fa99f779974c4df78e5274a9d8e0458c4137e8c5357e40e2c3faf2",
+        f"{HF}/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.onnx",
+        "5435fd747c9e0efe15a96d0b378d5bd157e9492ed8fd80edf08f30d02fa24634",
     ),
+    # PaddleOCR 3.x ships the character list inside inference.yml (PostProcess.character_dict).
     "dict_zhja.txt": (
-        f"{HF}/webnn/PP-OCRv5-ONNX/resolve/006b4419a415072fbb16a1d7d0d8548f789a8fae/ch_PP-OCRv5_dict.txt",
+        f"{HF}/PaddlePaddle/PP-OCRv6_small_rec_onnx/resolve/b8f84f0b80c529de40b4fbb3544b84fa7233a513/inference.yml",
         None,
     ),
     "rec_ko.onnx": (
@@ -54,7 +60,7 @@ MIN_WEIGHTS = 256  # leave tiny tensors in float
 
 def fetch(name: str) -> Path:
     url, sha = SOURCES[name]
-    path = CACHE / name
+    path = CACHE / f"{hashlib.sha256(url.encode()).hexdigest()[:12]}-{url.rsplit('/', 1)[1]}"
     if not path.exists():
         CACHE.mkdir(parents=True, exist_ok=True)
         print(f"downloading {name}")
@@ -138,7 +144,11 @@ def main():
         src = fetch(name)
         if name.endswith(".txt"):
             # Normalise to LF and drop a trailing blank line; index i+1 in the model output is line i.
-            lines = src.read_text(encoding="utf-8").replace("\r\n", "\n").rstrip("\n").split("\n")
+            text = src.read_text(encoding="utf-8")
+            if src.suffix == ".yml":
+                lines = [str(c) for c in yaml.safe_load(text)["PostProcess"]["character_dict"]]
+            else:
+                lines = text.replace("\r\n", "\n").rstrip("\n").split("\n")
             (OUT / name).write_text("\n".join(lines) + "\n", encoding="utf-8")
             print(f"{name}: {len(lines)} characters")
             continue
@@ -146,7 +156,11 @@ def main():
         if args.fp32:
             shutil.copyfile(src, OUT / f"{stem}.fp32.onnx")
         print(f"{name}:")
-        q = quantize_weights_int8(onnx.load(src))
+        model = onnx.load(src)
+        # Per-channel DequantizeLinear needs opset 13; the PP-OCRv6 recogniser is exported at 11.
+        if next(o.version for o in model.opset_import if o.domain in ("", "ai.onnx")) < 13:
+            model = version_converter.convert_version(model, 13)
+        q = quantize_weights_int8(model)
         dst = OUT / f"{stem}.int8.onnx"
         onnx.save(q, dst)
         print(f"  {src.stat().st_size / 1e6:.1f} MB -> {dst.stat().st_size / 1e6:.1f} MB")

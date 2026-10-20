@@ -1,4 +1,5 @@
-// PP-OCRv5 pipeline: DB text detection -> crop -> CTC recognition.
+// PP-OCR pipeline (PP-OCRv6 detector and recognisers, PP-OCRv5 for Korean): DB text detection ->
+// crop -> CTC recognition.
 // Pure JS on RGBA pixel buffers so it runs the same in the web worker and in Node tests.
 // Mirrors PaddleOCR's pre/post-processing (see tools/ocr_ref.py for the reference version).
 
@@ -132,7 +133,8 @@ function rectScore(prob, w, h, r) {
   return n ? sum / n : 0;
 }
 
-export function detBoxes(prob, w, h, sx, sy, { thresh = 0.3, boxThresh = 0.6, unclipRatio = 1.5, maxBoxes = 300 } = {}) {
+// Defaults: DBPostProcess settings of the PP-OCRv6 tiny detector (its inference.yml).
+export function detBoxes(prob, w, h, sx, sy, { thresh = 0.2, boxThresh = 0.4, unclipRatio = 1.4, maxBoxes = 300 } = {}) {
   const label = new Int32Array(w * h);
   const stack = new Int32Array(w * h);
   const boxes = [];

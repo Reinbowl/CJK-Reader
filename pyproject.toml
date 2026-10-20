@@ -9,4 +9,5 @@ dependencies = [
     "opencv-python-headless>=5.0.0.93",
     "pillow>=13.0.0",
     "pyclipper>=1.4.0",
+    "pyyaml>=6.0.2",
 ]

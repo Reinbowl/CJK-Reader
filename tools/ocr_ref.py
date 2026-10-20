@@ -1,4 +1,4 @@
-"""Reference PP-OCRv5 pipeline in Python (mirrors PaddleOCR's own pre/post-processing).
+"""Reference PP-OCR pipeline in Python (mirrors PaddleOCR's own pre/post-processing).
 
 Used to check the models and the int8 conversion, and as ground truth for the JS port.
 
@@ -41,7 +41,8 @@ class OCR:
         pred = self.det.run(None, {"x": x.transpose(2, 0, 1)[None].astype(np.float32)})[0][0, 0]
         return self._boxes(pred, w / rw, h / rh)
 
-    def _boxes(self, pred, sx, sy, thresh=0.3, box_thresh=0.6, unclip_ratio=1.5):
+    # DBPostProcess settings of the PP-OCRv6 tiny detector (its inference.yml).
+    def _boxes(self, pred, sx, sy, thresh=0.2, box_thresh=0.4, unclip_ratio=1.4):
         bitmap = (pred > thresh).astype(np.uint8)
         contours, _ = cv2.findContours(bitmap, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         boxes = []
