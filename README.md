@@ -15,8 +15,8 @@ first visit.
     where the browser offers it, otherwise digital zoom. Digital zoom crops the middle of the frame
     and reads it at the camera's full resolution, so small text gets more pixels, not just a bigger
     picture.
-  - After the shutter (or on a photo): pinch and drag the frozen frame. The image and its labels
-    are redrawn sharp at the new size, without reading it again.
+  - After the shutter (or on a photo): pinch and drag the frozen frame. It zooms like a page: the
+    same boxes and labels, just bigger, redrawn sharp, without reading it again or rearranging.
   - Double-tap resets either.
 
 ## How it works
@@ -191,8 +191,7 @@ padding.
   that from the surrounding characters.
 - **Crowded text:** when a line's labels can't go above or below it without covering other text,
   they're drawn at 8 px on the side that covers least, and can hide part of a neighbouring line.
-  Zooming into the frozen frame gives them room. The list (after the shutter) always shows every
-  line in full.
+  The list (after the shutter) always shows every line in full.
 - **Digital zoom** gets visibly soft past about 2×. The text is still read at the camera's full
   resolution, but there are only so many camera pixels in a third of the frame.
 

@@ -313,8 +313,12 @@ function overlapArea(p, q) {
 // stacked headlines leave no gap, and big glyphs stay readable under a label); small text shrinks
 // to MIN_LABEL and then goes on the side that covers least. Every reading is shown. Vertical lines
 // get their labels to the right of each character, like furigana.
-function draw(result, map) {
+// scale: the still's pinch/pan transform. The layout is always worked out at 1× and then drawn
+// scaled, so zooming a frozen frame enlarges its boxes and labels like zooming a page, without
+// rearranging them.
+function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
   sizeCanvas(overlay);
+  octx.transform(scale.s, 0, 0, scale.s, scale.tx, scale.ty);
   const P = (x, y) => [map.ox + x * map.s, map.oy + y * map.s];
   const outline = (box) => {
     octx.beginPath();
@@ -452,7 +456,7 @@ function draw(result, map) {
     }
     Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, row.size), max: Math.max(drawn.max, row.size) });
   }
-  stats.labels = drawn;
+  stats.labels = { ...drawn, min: drawn.min * scale.s, max: drawn.max * scale.s }; // on-screen px
 }
 
 // Fill the list of lines with ruby text; the list button (#list) shows it.
@@ -622,7 +626,7 @@ function redrawStill() {
   if (!lastStill) return;
   paintStill();
   if (lastStill.result) {
-    draw(lastStill.result, viewMap(lastStill.map));
+    draw(lastStill.result, lastStill.map, sv);
     overlayDrawn = { ...sv };
   }
   overlay.style.transform = cssFrom(overlayDrawn);

@@ -55,7 +55,7 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Live: `zoom` = the camera's own zoom (`hwZoom`, from `getCapabilities().zoom`, applied by `cameraZoom()` with one `applyConstraints` in flight) × digital `dzoom`.
   - Digital zoom scales `#cam` with CSS and passes `dzoom` to `visibleRect()`, which `grab()` and `thumbnail()` use, so reads and the motion gate see the same crop.
   - The shutter freezes the visible rectangle as a full-resolution `ImageBitmap`. `lastStill` keeps `src`, `rect`, `k`, `map` and `result`.
-  - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). During a gesture, `#still` and `#overlay` only get a CSS transform (`cssFrom()` relative to the transform each was drawn at). On lift, `redrawStill()` repaints from the source and re-runs `draw()` with `viewMap()`.
+  - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). During a gesture, `#still` and `#overlay` only get a CSS transform (`cssFrom()` relative to the transform each was drawn at). On lift, `redrawStill()` repaints the image from the source and calls `draw(result, map, sv)`. `draw()` works the layout out at 1× and paints it through the `sv` transform, so zooming enlarges boxes and labels like a page and never rearranges them.
   - Gestures are pointer events on `#view` (`touch-action: none`, Safari `gesturestart` cancelled). Double-tap resets.
   - `draw()` skips lines entirely off screen and only shifts a row back on screen when its line's centre is on screen.
   - The e2e `zoom` scene drives multi-touch through CDP `Input.dispatchTouchEvent`.

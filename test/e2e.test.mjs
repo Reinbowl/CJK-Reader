@@ -377,8 +377,8 @@ async function zoomScene() {
   const zs = await stats(page);
   console.log(`    still 1×: labels ${st.labels.min.toFixed(1)}–${st.labels.max.toFixed(1)} px · ${zs.zoom.still.toFixed(2)}×: ${zs.labels.min.toFixed(1)}–${zs.labels.max.toFixed(1)} px`);
   console.log(`    zoomed labels: ${JSON.stringify(zs.labels)}`);
-  check(zs.labels.min > st.labels.min || zs.labels.max > st.labels.max, "zooming the frozen frame lays the labels out again, bigger");
-  check(zs.labels.collisions === 0 && zs.labels.overlaps === 0, "no label rows on top of each other");
+  const same = ["lines", "labels", "crowded", "over", "collisions"].every((k) => zs.labels[k] === st.labels[k]);
+  check(same && Math.abs(zs.labels.max - st.labels.max * zs.zoom.still) < 0.5, "zooming the frozen frame scales its boxes and labels like a page, same layout");
   check(zs.reads === st.reads, "without reading it again");
   await shot(page, "zoom-still");
   await touch("touchStart", [[150, 400]]);
