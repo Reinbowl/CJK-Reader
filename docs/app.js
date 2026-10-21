@@ -21,6 +21,7 @@ const MODEL = { zh: "zhja", ja: "zhja", ko: "ko" };
 // Labels: LABEL_SCALE × the line's thickness, between MIN_LABEL and MAX_LABEL px. Live mode doesn't
 // recognise lines thinner than MIN_LINE px on screen (dev panel: 10/14/20).
 const LABEL_SCALE = 0.45, MIN_LABEL = 8, MAX_LABEL = 28;
+const OVERLAY_MIN = 14; // px: rows this big go over their own text rather than shrink below 3/4
 const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
@@ -305,8 +306,10 @@ function overlapArea(p, q) {
 // Each horizontal line gets one row of labels, its font scaled to that line (big text, big labels)
 // and shrunk until the row fits the line's length; labels are then spread so none overlap. The row
 // goes above the line, or below if that is clear of other lines and rows, or shrinks to fit the
-// gap; if nothing fits it goes on the side that covers least, so every reading is shown. Vertical
-// lines get their labels to the right of each character, like furigana.
+// gap. Big text shrinks to 3/4 at most and then gets its row laid over its own characters (tightly
+// stacked headlines leave no gap, and big glyphs stay readable under a label); small text shrinks
+// to MIN_LABEL and then goes on the side that covers least. Every reading is shown. Vertical lines
+// get their labels to the right of each character, like furigana.
 function draw(result, map) {
   sizeCanvas(overlay);
   const P = (x, y) => [map.ox + x * map.s, map.oy + y * map.s];
@@ -328,7 +331,7 @@ function draw(result, map) {
 
   const texts = result.lines.map((line) => line.box.map(([x, y]) => P(x, y)));
   const rows = []; // label rows placed so far (screen polygons)
-  const drawn = { lines: 0, labels: 0, crowded: 0, overlaps: 0, min: Infinity, max: 0 };
+  const drawn = { lines: 0, labels: 0, crowded: 0, over: 0, overlaps: 0, min: Infinity, max: 0, bigShrink: 1 };
   octx.textBaseline = "middle";
   // Biggest text first: its row is the hardest to place.
   const order = result.lines.map((_, k) => k).sort((a, b) => Math.hypot(...result.lines[b].B) - Math.hypot(...result.lines[a].B));
@@ -391,10 +394,17 @@ function draw(result, map) {
       const cost = () => others.reduce((a, b) => a + 2 * overlapArea(poly, b), 0) + rows.reduce((a, r) => a + overlapArea(poly, r), 0);
       return { size, w, x, lo, hi, at, poly, clear, cost };
     };
+    const big = fit >= OVERLAY_MIN;
+    const floor = big ? Math.max(MIN_LABEL, fit * 0.75) : MIN_LABEL;
     let row = null;
-    for (let size = fit; !row && size >= MIN_LABEL; size = size > MIN_LABEL && size * 0.85 < MIN_LABEL ? MIN_LABEL : size * 0.85) {
+    for (let size = fit; !row && size >= floor; size = size > floor && size * 0.85 < floor ? floor : size * 0.85) {
       row = [layout(size, -1), layout(size, 1)].find((r) => r.clear);
     }
+    if (!row && big) {
+      row = { ...layout(fit, 0), over: true }; // centred on the line itself
+      drawn.over++;
+    }
+    if (big) drawn.bigShrink = Math.min(drawn.bigShrink, row.size / fit);
     if (!row) {
       row = [layout(MIN_LABEL, -1), layout(MIN_LABEL, 1)].sort((a, b) => a.cost() - b.cost())[0];
       drawn.crowded++;
@@ -406,17 +416,24 @@ function draw(result, map) {
     octx.save();
     octx.translate(bx, by);
     octx.rotate(angle);
-    octx.fillStyle = "rgba(0,0,0,0.6)";
-    octx.fillRect(-(row.hi - row.lo) / 2, -row.size * 0.7, row.hi - row.lo, row.size * 1.4);
+    // Over the text: no backing, so the characters show between the letters; outlined labels instead.
+    if (!row.over) {
+      octx.fillStyle = "rgba(0,0,0,0.6)";
+      octx.fillRect(-(row.hi - row.lo) / 2, -row.size * 0.7, row.hi - row.lo, row.size * 1.4);
+    }
     octx.restore();
     octx.font = font(row.size);
     octx.textAlign = "center";
     octx.fillStyle = "#ffe066";
+    octx.strokeStyle = "rgba(0,0,0,0.85)";
+    octx.lineWidth = Math.max(2, row.size * 0.16);
+    octx.lineJoin = "round";
     for (const [i, l] of labels.entries()) {
       const [x, y] = row.at(row.x[i], 0);
       octx.save();
       octx.translate(x, y);
       octx.rotate(angle);
+      if (row.over) octx.strokeText(l.text, 0, 0);
       octx.fillText(l.text, 0, 0);
       octx.restore();
       if (i && row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;

@@ -320,8 +320,24 @@ async function webgpuScene() {
   await browser.close();
 }
 
+async function cartonScene() {
+  console.log("-- stacked headlines (photo): big labels, over the text when there's no gap");
+  const { browser, page, errors } = await open(clips.static);
+  await page.click('[data-lang="ja"]');
+  await page.setInputFiles("#file", join(root, "test/images/carton.png"));
+  await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads >= 1, null, 120000);
+  const s = await stats(page);
+  console.log(`    ${s.lines} lines, labels: ${JSON.stringify(s.labels)}`);
+  await shot(page, "carton-still");
+  check(s.labels.lines === truth.carton.lines.length && s.labels.overlaps === 0, `every line labelled (${s.labels.lines}/${truth.carton.lines.length}), none overlapping`);
+  check(s.labels.bigShrink >= 0.75, `big lines keep at least 3/4 of their label size (${s.labels.bigShrink.toFixed(2)})`);
+  check(s.labels.over >= 1, "a big line with no room above or below gets its labels over its text");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, pan: panScene, tremor: tremorScene };
+const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, carton: cartonScene, pan: panScene, tremor: tremorScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

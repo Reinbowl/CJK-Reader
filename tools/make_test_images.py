@@ -1,7 +1,7 @@
 """Render synthetic sign/label photos with known text for checking the OCR pipeline.
 
     uv run tools/make_test_images.py --fonts /path/to/noto-cjk-otfs
-    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar   # just one scene
+    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton   # just these
 
 Writes test/images/*.png and test/images/truth.json (entries for scenes not rendered are kept).
 """
@@ -100,13 +100,29 @@ def render_calendar(font_path, rng, size=(960, 1280)):
     return img.filter(ImageFilter.GaussianBlur(0.6)), lines
 
 
+# Big headlines stacked with almost no gap, like a milk carton: no room above or below for labels.
+CARTON = [("特選", 100), ("北海道牛乳", 120), ("種類別牛乳", 72), ("常温保存可能品", 85)]
+
+
+def render_carton(font_path, rng, size=(720, 640)):
+    w, h = size
+    base = np.full((h, w, 3), (244, 246, 248), np.uint8)
+    img = Image.fromarray(np.clip(base + rng.normal(0, 4, base.shape), 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(img)
+    y = 70
+    for text, px in CARTON:
+        d.text((w // 2, y + px // 2), text, font=ImageFont.truetype(str(font_path), px), fill=(25, 70, 160), anchor="mm")
+        y += px + 12
+    return img.filter(ImageFilter.GaussianBlur(0.6)), [t for t, _ in CARTON]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fonts", required=True, type=Path)
     ap.add_argument("--scenes", nargs="*", help="only render these (default: all)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    want = set(args.scenes or [*SCENES, "calendar"])
+    want = set(args.scenes or [*SCENES, "calendar", "carton"])
     rng = np.random.default_rng(7)
     random.seed(7)
     truth_path = OUT / "truth.json"
@@ -121,6 +137,11 @@ def main():
         img, lines = render_calendar(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(11))
         img.save(OUT / "calendar.png")
         truth["calendar"] = {"lang": "zh", "lines": lines}
+    if "carton" in want:
+        # The Simplified Chinese font has the kanji and kana; glyph shapes differ a little from Japanese.
+        img, lines = render_carton(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(13))
+        img.save(OUT / "carton.png")
+        truth["carton"] = {"lang": "ja", "lines": lines}
     truth_path.write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"wrote {len(want)} images to {OUT}")
 

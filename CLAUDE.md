@@ -15,13 +15,13 @@ node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
 npm run e2e                             # Playwright, headless Chromium, fake camera (~45 s)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, pan, tremor, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, carton, pan, tremor, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
-uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar  # regenerate one test image
+uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton  # regenerate these test images
 ```
 
-**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar scene only needs `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
+**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar and carton scenes only need `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
 
 **`npm run e2e`:**
 - Plays Y4M clips that `test/e2e.test.mjs` writes into `.cache/e2e/` (608×1080 portrait; the fake device crops anything taller to the 1080 px the app requests).
@@ -54,7 +54,9 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
 - **Labels (`draw()` in `app.js`):**
   - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, clamped to `MIN_LABEL`..`MAX_LABEL`) and shrunk so the row fits the line and the screen.
   - Labels are placed by `spread()`: an isotonic-regression least-squares fit, so labels never overlap within a row.
-  - Rows are placed biggest line first: above, else below, else smaller. `overlaps()` is a separating-axis test against other lines' boxes and placed rows. If nothing is clear, the side with the least `overlapArea` wins.
+  - Rows are placed biggest line first: above, else below, else smaller. `overlaps()` is a separating-axis test against other lines' boxes and placed rows.
+  - Rows of `OVERLAY_MIN` px and up shrink to 3/4 at most, then go over their own line (`row.over`: outlined, no backing).
+  - Smaller rows shrink to `MIN_LABEL`, then the side with the least `overlapArea` wins. The e2e `carton` scene (stacked headlines) pins the overlay case.
   - Vertical lines get furigana-style labels to the right.
   - `cjkStats.labels` (lines, labels, crowded, overlaps, min/max size) is what the e2e checks read.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.

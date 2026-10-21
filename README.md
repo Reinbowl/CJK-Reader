@@ -48,8 +48,12 @@ Labels:
 - **Position:** each label sits as close as it can to its own characters. Labels are only pushed
   sideways as far as needed to stop them overlapping (a least-squares fit).
 - **Crowding:** the row goes above the line, or below if the space above is taken by other text or
-  another row, or shrinks to fit the gap. If nothing fits, it goes on the side that covers least, so
-  every reading is always shown.
+  another row, or shrinks to fit the gap.
+  - **Big text** shrinks to 3/4 of its size at most. Tightly stacked headlines leave no gap at all,
+    so the row then goes over the line's own characters instead: outlined labels with no backing,
+    so the big glyphs stay visible between the letters.
+  - **Small text** shrinks to 8 px, then goes on the side that covers least.
+  - Either way, every reading is always shown.
 - **Freeze:** after the shutter, the live labels stay up while the frame is re-read at higher
   resolution, then every line gets its readings, small ones included.
 
