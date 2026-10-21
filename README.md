@@ -10,6 +10,14 @@ first visit.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
   it. The list button shows every line with ruby text.
 - **Photo:** reads a picture from the library instead of the camera.
+- **Zoom:**
+  - Live mode: pinch, or use the slider above the shutter (1×–3×). It uses the camera's own zoom
+    where the browser offers it, otherwise digital zoom. Digital zoom crops the middle of the frame
+    and reads it at the camera's full resolution, so small text gets more pixels, not just a bigger
+    picture.
+  - After the shutter (or on a photo): pinch and drag the frozen frame. The image and its labels
+    are redrawn sharp at the new size, without reading it again.
+  - Double-tap resets either.
 
 ## How it works
 
@@ -151,9 +159,9 @@ skipped), and the backend actually in use. URL switches:
 | `debug` | off | `1` shows the motion gate's numbers and the viewport/safe-area sizes under the status bar |
 
 A home-screen app can't be given URL switches. Instead, **tap the status line three times** to open
-a dev panel with the debug readout and buttons for `ep`, `threads`, the live-mode minimum line size
-and `spin`. The buttons reload
-the app, and the choices are saved on the device. A URL switch overrides the panel.
+a dev panel with the debug readout and buttons for `ep`, `threads`, the live-mode minimum line size,
+`spin`, and camera vs digital zoom. The buttons reload the app, and the choices are saved on the
+device. A URL switch overrides the panel. The readout also says which zoom is in use.
 
 Recognition time grows with the total width of the lines in view. Each crop is padded only to a
 multiple of 32 px (64 px minimum), not to PaddleOCR's 320 px, so short boxes such as calendar
@@ -183,7 +191,10 @@ padding.
   that from the surrounding characters.
 - **Crowded text:** when a line's labels can't go above or below it without covering other text,
   they're drawn at 8 px on the side that covers least, and can hide part of a neighbouring line.
-  The list (after the shutter) always shows every line in full.
+  Zooming into the frozen frame gives them room. The list (after the shutter) always shows every
+  line in full.
+- **Digital zoom** gets visibly soft past about 2×. The text is still read at the camera's full
+  resolution, but there are only so many camera pixels in a third of the frame.
 
 ## Sources and licenses
 

@@ -13,9 +13,9 @@ uv run tools/prepare_models.py [--fp32] # download pinned models, verify sha256,
 npm test                                # both Node test suites
 node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
-npm run e2e                             # Playwright, headless Chromium, fake camera (~45 s)
+npm run e2e                             # Playwright, headless Chromium, fake camera (~1 min)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, carton, pan, tremor, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, carton, zoom, pan, tremor, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
 uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton  # regenerate these test images
@@ -51,6 +51,14 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - `liveLoop` reads only in `ready`, with a duty-cycle gap (`MIN_GAP`, and at least the last read's duration).
   - `#overlay` gets the `faded` class on fast moves, and otherwise a CSS translate that follows the drift.
   - Tune the thresholds on a phone with the dev panel's readout. The e2e `pan` (fast) and `tremor` (big text, jitter) clips pin the behaviour.
+- **Zoom (`app.js`):**
+  - Live: `zoom` = the camera's own zoom (`hwZoom`, from `getCapabilities().zoom`, applied by `cameraZoom()` with one `applyConstraints` in flight) × digital `dzoom`.
+  - Digital zoom scales `#cam` with CSS and passes `dzoom` to `visibleRect()`, which `grab()` and `thumbnail()` use, so reads and the motion gate see the same crop.
+  - The shutter freezes the visible rectangle as a full-resolution `ImageBitmap`. `lastStill` keeps `src`, `rect`, `k`, `map` and `result`.
+  - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). During a gesture, `#still` and `#overlay` only get a CSS transform (`cssFrom()` relative to the transform each was drawn at). On lift, `redrawStill()` repaints from the source and re-runs `draw()` with `viewMap()`.
+  - Gestures are pointer events on `#view` (`touch-action: none`, Safari `gesturestart` cancelled). Double-tap resets.
+  - `draw()` skips lines entirely off screen and only shifts a row back on screen when its line's centre is on screen.
+  - The e2e `zoom` scene drives multi-touch through CDP `Input.dispatchTouchEvent`.
 - **Labels (`draw()` in `app.js`):**
   - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, clamped to `MIN_LABEL`..`MAX_LABEL`) and shrunk so the row fits the line and the screen.
   - Labels are placed by `spread()`: an isotonic-regression least-squares fit, so labels never overlap within a row.

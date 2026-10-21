@@ -336,8 +336,65 @@ async function cartonScene() {
   await browser.close();
 }
 
+async function zoomScene() {
+  console.log("-- zoom: slider and pinch live, pinch and pan the frozen frame, double-tap resets");
+  const { browser, page, errors } = await open(clips.calendar);
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (type, pts) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+  const pinch = async (cx, cy, d0, d1) => {
+    await touch("touchStart", [[cx - d0 / 2, cy], [cx + d0 / 2, cy]]);
+    for (let i = 1; i <= 10; i++) {
+      const d = d0 + ((d1 - d0) * i) / 10;
+      await touch("touchMove", [[cx - d / 2, cy], [cx + d / 2, cy]]);
+    }
+    await touch("touchEnd", []);
+  };
+  const doubleTap = async () => { await page.touchscreen.tap(195, 420); await page.touchscreen.tap(195, 420); };
+  await startLive(page);
+  const one = await stats(page);
+
+  await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await until(page, (n) => self.cjkStats.reads > n && self.cjkStats.gate === "idle", one.reads);
+  const two = await stats(page);
+  console.log(`    1×: ${one.lines} lines, labels ${one.labels.min.toFixed(1)}–${one.labels.max.toFixed(1)} px · 2×: ${two.lines} lines, labels ${two.labels.min.toFixed(1)}–${two.labels.max.toFixed(1)} px · ${JSON.stringify(two.zoom)}`);
+  check(two.zoom.live === 2 && two.zoom.digital === 2, "slider sets 2× (digital: this camera has no zoom of its own)");
+  // (Its "small" lines are slivers of characters cut off at the screen edges.)
+  check(two.labels.max > one.labels.max * 1.3, "the zoomed read's labels are bigger");
+  await shot(page, "zoom-live-2x");
+  await pinch(195, 420, 100, 160);
+  const p = await stats(page);
+  check(p.zoom.live > 2.5, `pinching out zooms in (${p.zoom.live}×)`);
+  await doubleTap();
+  await until(page, () => self.cjkStats.zoom.live === 1);
+  check(true, "double-tap resets the live zoom");
+
+  const before = await stats(page);
+  await page.click("#shutter");
+  await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !self.cjkStats.reading, before.reads);
+  const st = await stats(page);
+  await pinch(195, 420, 80, 240);
+  await until(page, () => self.cjkStats.zoom.still > 2);
+  const zs = await stats(page);
+  console.log(`    still 1×: labels ${st.labels.min.toFixed(1)}–${st.labels.max.toFixed(1)} px · ${zs.zoom.still.toFixed(2)}×: ${zs.labels.min.toFixed(1)}–${zs.labels.max.toFixed(1)} px`);
+  console.log(`    zoomed labels: ${JSON.stringify(zs.labels)}`);
+  check(zs.labels.min > st.labels.min || zs.labels.max > st.labels.max, "zooming the frozen frame lays the labels out again, bigger");
+  check(zs.labels.collisions === 0 && zs.labels.overlaps === 0, "no label rows on top of each other");
+  check(zs.reads === st.reads, "without reading it again");
+  await shot(page, "zoom-still");
+  await touch("touchStart", [[150, 400]]);
+  for (let i = 1; i <= 5; i++) await touch("touchMove", [[150 + 20 * i, 400 + 20 * i]]);
+  await touch("touchEnd", []);
+  await until(page, (x) => self.cjkStats.zoom.pan[0] !== x, zs.zoom.pan[0]);
+  check(true, "dragging pans the zoomed frame");
+  await doubleTap();
+  await until(page, () => self.cjkStats.zoom.still === 1);
+  check(true, "double-tap resets the still zoom");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, carton: cartonScene, pan: panScene, tremor: tremorScene };
+const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

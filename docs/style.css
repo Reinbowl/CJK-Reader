@@ -13,10 +13,12 @@ html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color:
   font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; }
 button, .btn { font: inherit; color: inherit; cursor: pointer; }
 
-#view { position: fixed; inset: 0; }
+/* touch-action: pinches and drags on the view zoom and pan it (app.js), not the page. */
+#view { position: fixed; inset: 0; touch-action: none; }
 #view > * { position: absolute; inset: 0; width: 100%; height: 100%; }
 #cam { object-fit: cover; }
 #overlay { pointer-events: none; transition: opacity .15s; }
+#still, #overlay { transform-origin: 0 0; }
 #overlay.faded { opacity: 0; }
 
 header { position: fixed; z-index: 2; top: 0; left: 0; right: 0; padding: calc(var(--safe-t) + 10px) 16px 8px;
@@ -46,6 +48,15 @@ body:not([data-mode="still"]) #list { visibility: hidden; }
 .shutter:active { transform: scale(.94); }
 body[data-mode="idle"] .shutter { visibility: hidden; }
 body[data-mode="still"] .shutter { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 700; }
+
+#zoombar { position: fixed; z-index: 2; left: 50%; bottom: calc(var(--safe-b) + 104px); transform: translateX(-50%);
+  width: min(240px, 64vw); display: flex; flex-direction: column; align-items: center; gap: 2px;
+  padding: 4px 12px 2px; border-radius: 14px; background: rgba(0,0,0,.45); }
+body:not([data-mode="live"]) #zoombar { display: none; }
+#zoomval { font-size: 12px; font-weight: 600; color: var(--accent); }
+#zoom { width: 100%; margin: 0; accent-color: var(--accent); }
+#zoombar .ticks { width: 100%; display: flex; justify-content: space-between; }
+#zoombar .ticks button { border: 0; background: none; padding: 2px 4px; font-size: 12px; color: var(--muted); }
 
 #sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 100px); max-height: 42vh; overflow-y: auto;
   margin: 0 12px; padding: 4px 16px; border-radius: 14px; background: var(--panel); backdrop-filter: blur(8px); }

@@ -37,6 +37,12 @@
 
   <section id="sheet" hidden><ol id="lines"></ol></section>
 
+  <div id="zoombar">
+    <output id="zoomval" for="zoom">1.0×</output>
+    <input id="zoom" type="range" min="1" max="3" step="0.05" value="1" aria-label="Zoom">
+    <div class="ticks"><button data-zoom="1">1×</button><button data-zoom="2">2×</button><button data-zoom="3">3×</button></div>
+  </div>
+
   <footer>
     <label class="btn icon" aria-label="Open photo" title="Open photo">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5h10.5a3 3 0 0 1 3 3V17"/><rect x="3.5" y="7" width="13.5" height="13.5" rx="2.5"/><circle cx="8.3" cy="11.8" r="1.5"/><path d="M17 17.5l-4-4-8.5 7"/></svg>
