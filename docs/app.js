@@ -568,21 +568,47 @@ statusEl.addEventListener("click", () => {
 // Still: pinch and drag the frozen frame; while the fingers move the canvases are only transformed
 // with CSS, and when they lift the frame and its labels are drawn again sharp at the new size.
 // Double-tap resets either.
-const ZOOM_MAX = 3, STILL_ZOOM_MAX = 4;
+// The camera's own zoom goes to 5× (telephoto lenses top out there; beyond it the camera only crops),
+// digital zoom to 3× (softer than that isn't worth it). A frozen frame zooms to 5×: its labels stay
+// sharp at any size, the picture under them doesn't.
+const DIGITAL_MAX = 3, CAMERA_MAX = 5, STILL_ZOOM_MAX = 5;
+const zoomMax = () => (hwZoom ? Math.max(DIGITAL_MAX, Math.min(CAMERA_MAX, hwZoom.max)) : DIGITAL_MAX);
 let stillDrawn = { ...sv }, overlayDrawn = { ...sv }; // the transform each canvas was drawn at
 
+let tickMax = 0;
 function applyZoom() {
   const hw = hwZoom ? Math.min(zoom, hwZoom.max) : 1;
   dzoom = zoom / hw;
   if (hwZoom) cameraZoom(Math.max(hwZoom.min, hw));
   video.style.transform = dzoom > 1.001 ? `scale(${dzoom})` : "";
+  const max = zoomMax();
+  if (max !== tickMax) {
+    // Marks under the slider at 1×, 2×, 3× (and 5×), where the thumb's centre is at those values.
+    tickMax = max;
+    $("#zoom").max = String(max);
+    $("#zoombar .ticks").replaceChildren(...[1, 2, 3, 5].filter((v) => v <= max).map((v) => {
+      const b = document.createElement("button");
+      b.textContent = `${v}×`;
+      b.style.left = `calc(9px + (100% - 18px) * ${(v - 1) / (max - 1)})`;
+      b.onclick = () => { setZoom(v); wakeZoombar(); };
+      return b;
+    }));
+  }
   $("#zoom").value = String(zoom);
   $("#zoomval").textContent = `${zoom.toFixed(1)}×`;
-  stats.zoom = { live: zoom, digital: dzoom, camera: !!hwZoom, still: sv.s };
+  stats.zoom = { live: zoom, digital: dzoom, camera: !!hwZoom, still: sv.s, max };
+}
+
+// The slider rests as a thin line; touching it (or pinching) shows it in full for a couple of seconds.
+let zoombarTimer = 0;
+function wakeZoombar() {
+  $("#zoombar").classList.add("active");
+  clearTimeout(zoombarTimer);
+  zoombarTimer = setTimeout(() => $("#zoombar").classList.remove("active"), 2000);
 }
 
 function setZoom(z) {
-  z = Math.min(ZOOM_MAX, Math.max(1, Math.round(z * 20) / 20));
+  z = Math.min(zoomMax(), Math.max(1, Math.round(z * 20) / 20));
   if (z === zoom) return;
   zoom = z;
   applyZoom();
@@ -665,7 +691,7 @@ view.addEventListener("pointermove", (e) => {
   if (Math.hypot(c[0] - gesture.c[0], c[1] - gesture.c[1]) > 8 || Math.abs(d - gesture.d) > 8) gesture.moved = true;
   if (!gesture.moved) return;
   const f = gesture.d && d ? d / gesture.d : 1;
-  if (mode === "live" && pts.length > 1) setZoom(gesture.zoom * f);
+  if (mode === "live" && pts.length > 1) { setZoom(gesture.zoom * f); wakeZoombar(); }
   if (mode === "still") {
     // The image point under the fingers' starting centre stays under their centre.
     const g = gesture.sv, s = Math.min(STILL_ZOOM_MAX, Math.max(1, g.s * f));
@@ -693,8 +719,8 @@ view.addEventListener("pointerup", lift);
 view.addEventListener("pointercancel", lift);
 document.addEventListener("gesturestart", (e) => e.preventDefault()); // Safari's own pinch-zoom of the page
 
-$("#zoom").oninput = (e) => setZoom(Number(e.target.value));
-document.querySelectorAll("#zoombar [data-zoom]").forEach((b) => (b.onclick = () => setZoom(Number(b.dataset.zoom))));
+$("#zoom").oninput = (e) => { setZoom(Number(e.target.value)); wakeZoombar(); };
+$("#zoom").addEventListener("pointerdown", wakeZoombar);
 
 // ---------- modes ----------
 function setMode(m) {

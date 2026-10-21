@@ -53,6 +53,8 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Tune the thresholds on a phone with the dev panel's readout. The e2e `pan` (fast) and `tremor` (big text, jitter) clips pin the behaviour.
 - **Zoom (`app.js`):**
   - Live: `zoom` = the camera's own zoom (`hwZoom`, from `getCapabilities().zoom`, applied by `cameraZoom()` with one `applyConstraints` in flight) × digital `dzoom`.
+  - Range: up to `CAMERA_MAX` (5) with camera zoom (iOS Safari reports 0.5–10×), `DIGITAL_MAX` (3) without, and `STILL_ZOOM_MAX` (5) for frozen frames.
+  - The slider's marks are rebuilt in `applyZoom()` for the current range. `wakeZoombar()` shows it in full for 2 s; at rest it's a line.
   - Digital zoom scales `#cam` with CSS and passes `dzoom` to `visibleRect()`, which `grab()` and `thumbnail()` use, so reads and the motion gate see the same crop.
   - The shutter freezes the visible rectangle as a full-resolution `ImageBitmap`. `lastStill` keeps `src`, `rect`, `k`, `map` and `result`.
   - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). During a gesture, `#still` and `#overlay` only get a CSS transform (`cssFrom()` relative to the transform each was drawn at). On lift, `redrawStill()` repaints the image from the source and calls `draw(result, map, sv)`. `draw()` works the layout out at 1× and paints it through the `sv` transform, so zooming enlarges boxes and labels like a page and never rearranges them.

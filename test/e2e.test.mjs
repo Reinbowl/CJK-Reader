@@ -353,7 +353,10 @@ async function zoomScene() {
   await startLive(page);
   const one = await stats(page);
 
+  const barActive = () => page.evaluate(() => document.querySelector("#zoombar").classList.contains("active"));
+  check(!(await barActive()), "the zoom slider rests as a line");
   await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  check(await barActive(), "touching it shows it in full");
   await until(page, (n) => self.cjkStats.reads > n && self.cjkStats.gate === "idle", one.reads);
   const two = await stats(page);
   console.log(`    1×: ${one.lines} lines, labels ${one.labels.min.toFixed(1)}–${one.labels.max.toFixed(1)} px · 2×: ${two.lines} lines, labels ${two.labels.min.toFixed(1)}–${two.labels.max.toFixed(1)} px · ${JSON.stringify(two.zoom)}`);
@@ -361,6 +364,9 @@ async function zoomScene() {
   // (Its "small" lines are slivers of characters cut off at the screen edges.)
   check(two.labels.max > one.labels.max * 1.3, "the zoomed read's labels are bigger");
   await shot(page, "zoom-live-2x");
+  await page.waitForTimeout(2300);
+  check(!(await barActive()), "and it fades back to a line after 2 s");
+  await shot(page, "zoom-live-idle");
   await pinch(195, 420, 100, 160);
   const p = await stats(page);
   check(p.zoom.live > 2.5, `pinching out zooms in (${p.zoom.live}×)`);

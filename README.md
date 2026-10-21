@@ -11,12 +11,15 @@ first visit.
   it. The list button shows every line with ruby text.
 - **Photo:** reads a picture from the library instead of the camera.
 - **Zoom:**
-  - Live mode: pinch, or use the slider above the shutter (1×–3×). It uses the camera's own zoom
-    where the browser offers it, otherwise digital zoom. Digital zoom crops the middle of the frame
-    and reads it at the camera's full resolution, so small text gets more pixels, not just a bigger
-    picture.
-  - After the shutter (or on a photo): pinch and drag the frozen frame. It zooms like a page: the
-    same boxes and labels, just bigger, redrawn sharp, without reading it again or rearranging.
+  - Live mode: pinch, or use the slider above the shutter. At rest the slider is just a thin line;
+    touching it or pinching shows it in full for 2 s.
+  - It uses the camera's own zoom where the browser offers it (Safari on iPhone does), up to 5×,
+    where telephoto lenses top out; the phone picks the lens.
+  - Otherwise it uses digital zoom up to 3×. Digital zoom crops the middle of the frame and reads it
+    at the camera's full resolution, so small text gets more pixels, not just a bigger picture.
+  - After the shutter (or on a photo): pinch and drag the frozen frame, up to 5×. It zooms like a
+    page: the same boxes and labels, just bigger, redrawn sharp, without reading it again or
+    rearranging.
   - Double-tap resets either.
 
 ## How it works
