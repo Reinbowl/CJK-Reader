@@ -6,6 +6,32 @@ const where = (e) => (String(e?.stack ?? "").match(/([\w.-]+\.m?js):(\d+)/) ?? [
 
 let japanese = null;
 
+// The Japanese dictionary (12 files, 18 MB): fetched here first with progress for the app's progress
+// bar, so kuromoji's own silent requests then come from the service worker's cache.
+const DICT = ["base", "cc", "check", "tid", "tid_map", "tid_pos", "unk", "unk_char", "unk_compat", "unk_invoke", "unk_map", "unk_pos"];
+async function fetchDictionary() {
+  const got = {}, size = {};
+  let last = 0;
+  const report = (end) => {
+    if (!end && performance.now() - last < 100) return;
+    last = performance.now();
+    const loaded = Object.values(got).reduce((a, b) => a + b, 0);
+    postMessage({ type: "progress", file: "dictionary", loaded, total: end ? loaded : Object.values(size).reduce((a, b) => a + b, 0) });
+  };
+  await Promise.all(DICT.map(async (name) => {
+    const res = await fetch(`vendor/kuromoji/dict/${name}.dat.gz`);
+    if (!res.ok) throw new Error(`${name}.dat.gz: HTTP ${res.status}`);
+    size[name] = Number(res.headers.get("content-length")) || 0;
+    got[name] = 0;
+    const reader = res.body.getReader();
+    for (let r; !(r = await reader.read()).done;) {
+      got[name] += r.value.length;
+      report(false);
+    }
+  }));
+  report(true);
+}
+
 // Live mode sends the same lines again and again: keep the last readings (least recently used out).
 const memo = new Map();
 function annotate(lang, text) {
@@ -25,7 +51,7 @@ onmessage = async ({ data }) => {
   try {
     if (lang === "ja" && !japanese) {
       importScripts("vendor/kuromoji/kuromoji.js");
-      japanese = Reading.initJapanese("vendor/kuromoji/dict/");
+      japanese = fetchDictionary().then(() => Reading.initJapanese("vendor/kuromoji/dict/"));
     }
     if (lang === "ja") await japanese;
     if (type === "load") return postMessage({ id });

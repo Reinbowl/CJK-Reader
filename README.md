@@ -43,6 +43,8 @@ Live mode doesn't read every frame:
     changed since the last read.
   - What counts as "the same scene" adapts to how much the image jitters while steady. Big, sharp
     text close to the camera jitters more than a distant sign.
+  - The thresholds scale with zoom. At 3× the same hand shake moves the picture three times as far,
+    so the gate looks at a three times coarser thumbnail.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
   the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
   switches to WASM until the next launch, and the status bar says so.
@@ -86,7 +88,10 @@ accurate than tiny but about 4× the size and slower.
 than fp32 (9.8 MB vs 36.3 MB), and the character error rate on the test images stays within 0.015
 of fp32. Compute stays float32, so the same files run on the WASM and WebGPU backends.
 
-Downloads are lazy and cached by the service worker:
+Downloads are lazy and cached by the service worker. On the first visit, the runtime, the
+detector and the current language's recognizer download together behind one progress bar on the
+start screen. If the camera starts before they're done, the status line carries on with the
+percentage. The Japanese dictionary gets its own bar the first time 日本語 is picked.
 
 - Core app: ~1 MB
 - ONNX Runtime WASM: 14 MB

@@ -20,8 +20,9 @@ function serial(fn) {
 }
 let cancelBefore = 0; // reads sent before the last "cancel" give up at their next check
 
-async function download(file) {
-  const res = await fetch(new URL(`models/${file}`, import.meta.url));
+// Fetch a file, telling the app how far along it is ("progress" events, for the progress bar).
+async function download(url, file) {
+  const res = await fetch(url);
   if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
   const total = Number(res.headers.get("content-length")) || 0;
   const reader = res.body.getReader();
@@ -44,7 +45,7 @@ async function download(file) {
   return buf;
 }
 
-const bytes = (file) => (models[file] ??= download(file).catch((e) => { delete models[file]; throw e; }));
+const bytes = (file) => (models[file] ??= download(new URL(`models/${file}`, import.meta.url), file).catch((e) => { delete models[file]; throw e; }));
 
 // One backend per session, no ["webgpu", "wasm"] list: ORT would fall back silently, and the status
 // bar would claim WebGPU while WASM does the work.
@@ -106,10 +107,18 @@ onmessage = async ({ data }) => {
           if (adapter) gpu = [adapter.info?.vendor, adapter.info?.architecture, adapter.features.has("shader-f16") && "f16"].filter(Boolean).join(" ") || "yes";
           else { fallback = navigator.gpu ? "no WebGPU adapter" : "no WebGPU in this browser"; backend = "wasm"; }
         }
-        // The WebGPU build (27 MB) also runs WASM sessions, for a fallback after a failed WebGPU one.
+        // Start everything the first read needs at once, so the app can show one progress bar: the
+        // runtime's .wasm (fetched here and handed to ORT, which would otherwise fetch it silently),
+        // the detector, and the recogniser for the current language. The WebGPU build (27 MB) also
+        // runs WASM sessions, for a fallback after a failed WebGPU one.
+        const runtime = backend === "webgpu" ? "ort-wasm-simd-threaded.asyncify.wasm" : "ort-wasm-simd-threaded.wasm";
+        const wasm = download(new URL(`vendor/ort/${runtime}`, import.meta.url), runtime);
+        bytes(`det.${data.precision}.onnx`).catch(() => {});
+        if (data.model) bytes(`rec_${data.model}.${data.precision}.onnx`).catch(() => {});
         ort = await import(backend === "webgpu" ? "./vendor/ort/ort.webgpu.min.mjs" : "./vendor/ort/ort.wasm.min.mjs");
         ort.env.wasm.wasmPaths = new URL("./vendor/ort/", import.meta.url).href;
         ort.env.wasm.numThreads = data.threads;
+        ort.env.wasm.wasmBinary = await wasm;
         det = await session(`det.${data.precision}.onnx`);
       })();
       await ready;

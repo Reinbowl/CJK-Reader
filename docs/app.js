@@ -26,7 +26,7 @@ const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
 // What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug.
-const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, zoom: null });
+const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, zoom: null, download: null });
 
 let lang = (() => {
   try { const saved = localStorage.getItem("lang"); if (MODEL[saved]) return saved; } catch {}
@@ -79,19 +79,44 @@ function rpc(worker, onEvent) {
   });
 }
 
+// Downloads (runtime, models, the Japanese dictionary) as one progress bar on the start screen, and
+// in the status line if the camera is already running. A new batch starts once the last one is done.
 const progress = {};
+const finished = (p) => p.total && p.loaded >= p.total;
 function onProgress({ type, file, loaded, total }) {
   if (type !== "progress") return;
-  progress[file] = { loaded, total };
-  const parts = Object.entries(progress).map(([f, p]) =>
-    `${f.split(".")[0]} ${p.total && p.loaded >= p.total ? "✓" : `${(p.loaded / 1e6).toFixed(1)}${p.total ? `/${(p.total / 1e6).toFixed(1)}` : ""} MB`}`);
-  $("#progress").textContent = parts.join(" · ");
+  if (!progress[file] && Object.values(progress).every(finished)) for (const f in progress) delete progress[f];
+  progress[file] = { loaded, total: Math.max(total, 0) };
+  const files = Object.values(progress), done = files.every(finished);
+  const sum = (f) => files.reduce((a, p) => a + f(p), 0);
+  const all = sum((p) => p.total || p.loaded), got = sum((p) => Math.min(p.loaded, p.total || p.loaded));
+  const pct = all ? (100 * got) / all : 0;
+  stats.download = { pct, done, ready: false };
+  $("#progress").hidden = false;
+  $("#progress i").style.width = `${pct.toFixed(1)}%`;
+  $("#progress p").textContent = done ? "Preparing…" : `Downloading (first time only) · ${(got / 1e6).toFixed(1)} / ${(all / 1e6).toFixed(1)} MB`;
+  if (mode === "live") setStatus(done ? "Preparing…" : `Downloading… ${Math.floor(pct)} %`);
+}
+
+// The current language's models are loaded: only now is the reader ready.
+function showReady() {
+  stats.download = { ...stats.download, ready: true };
+  if ($("#progress").hidden) return; // nothing was downloaded: everything came from the cache quietly
+  $("#progress i").style.width = "100%";
+  $("#progress p").textContent = "Ready";
 }
 
 // The OCR worker also says when it had to move from WebGPU to WASM mid-session.
 const ocr = rpc(new Worker("ocr-worker.js", { type: "module" }), (d) => (d.type === "backend" ? onBackend(d) : onProgress(d)));
 const reading = rpc(new Worker("reading-worker.js"), onProgress);
-const inited = ocr({ type: "init", ep: EP, precision: PRECISION, threads: THREADS, spin: SPIN });
+// The worker starts on the runtime, the detector and this language's recogniser at once. If that
+// first download fails (a dropped connection), the next read tries again.
+let inited;
+function init() {
+  inited = ocr({ type: "init", ep: EP, precision: PRECISION, threads: THREADS, spin: SPIN, model: MODEL[lang] });
+  inited.then(onBackend, () => {});
+}
+init();
 let backend = EP;
 function onBackend(r) {
   backend = r.fallback ? `${r.backend} (no webgpu)` : r.backend;
@@ -99,11 +124,15 @@ function onBackend(r) {
   if (r.fallback) console.warn(r.fallback);
   debugReadout();
 }
-inited.then(onBackend, () => {});
 const loaded = {};
 function ensureModels(l) {
   loaded[l] ??= Promise.all([inited, ocr({ type: "load", model: MODEL[l] }), reading({ type: "load", lang: l })])
-    .catch((e) => { delete loaded[l]; throw e; });
+    .catch((e) => {
+      delete loaded[l];
+      const failed = inited;
+      inited.catch(() => { if (inited === failed) init(); });
+      throw e;
+    });
   return loaded[l];
 }
 
@@ -158,6 +187,9 @@ async function read(image, detLimit, minLineH = 0) {
 //   CHANGE_PX or shows something else.
 // "Same scene" is judged against the noise seen while steady: big sharp text leaves more residue
 // after a sub-pixel shift than a soft scene, and the tolerance grows with it.
+// Zoomed in, the same hand shake moves the picture further, so the thumbnail gets coarser in step
+// (THUMB_W / zoom px wide, the shift search with it): all the thresholds then stand for the same
+// movement of the phone at any zoom.
 const GATE_MS = 100, THUMB_W = 40, SEARCH = 6, SETTLE = 2;
 const FAST_PX = 2, STEADY_PX = 0.8, CHANGE_PX = 3; // thumbnail px (per sample for the first two)
 const thumbCanvas = document.createElement("canvas");
@@ -166,7 +198,7 @@ const gate = { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, re
 
 function thumbnail() {
   const { sx, sy, sw, sh } = visibleRect(video.videoWidth, video.videoHeight, "cover", dzoom);
-  const w = THUMB_W, h = Math.max(2 * SEARCH + 2, Math.round((THUMB_W * sh) / sw));
+  const w = Math.max(16, Math.round(THUMB_W / zoom)), h = Math.max(16, Math.round((w * sh) / sw));
   // Draw at 4× and box-filter down: shrinking 1080p straight to 36 px aliases into fake motion.
   thumbCanvas.width = w * 4;
   thumbCanvas.height = h * 4;
@@ -187,7 +219,7 @@ function thumbnail() {
 // fit, plus the mean abs difference left at that shift.
 function compare(a, b) {
   if (!a || !b || a.w !== b.w || a.h !== b.h) return null;
-  const { w, h } = a, R = SEARCH, n = 2 * R + 1;
+  const { w, h } = a, R = Math.max(2, Math.round((SEARCH * w) / THUMB_W)), n = 2 * R + 1;
   const cost = new Float32Array(n * n);
   let best = 0;
   for (let dy = -R; dy <= R; dy++) {
@@ -238,21 +270,28 @@ function startGate() {
   gate.timer = setInterval(sample, GATE_MS);
 }
 
-// keep: leave the overlay where it is (the shutter keeps the live labels up while re-reading).
-function stopGate(keep = false) {
+function stopGate() {
   clearInterval(gate.timer);
   overlay.classList.remove("faded");
-  if (!keep) overlay.style.transform = "";
+  overlay.style.transform = "";
 }
 
 // ---------- drawing ----------
 const octx = overlay.getContext("2d");
 
+// Fit the canvas to the view and clear it (resizing only when the size changed: a frozen frame is
+// repainted on every frame of a pinch).
 function sizeCanvas(c) {
   const dpr = devicePixelRatio || 1;
-  c.width = Math.round(view.clientWidth * dpr);
-  c.height = Math.round(view.clientHeight * dpr);
+  const w = Math.round(view.clientWidth * dpr), h = Math.round(view.clientHeight * dpr);
   const ctx = c.getContext("2d");
+  if (c.width !== w || c.height !== h) {
+    c.width = w;
+    c.height = h;
+  } else {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+  }
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   return ctx;
 }
@@ -313,42 +352,23 @@ function overlapArea(p, q) {
 // stacked headlines leave no gap, and big glyphs stay readable under a label); small text shrinks
 // to MIN_LABEL and then goes on the side that covers least. Every reading is shown. Vertical lines
 // get their labels to the right of each character, like furigana.
-// scale: the still's pinch/pan transform. The layout is always worked out at 1× and then drawn
-// scaled, so zooming a frozen frame enlarges its boxes and labels like zooming a page, without
-// rearranging them.
-function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
-  sizeCanvas(overlay);
-  octx.transform(scale.s, 0, 0, scale.s, scale.tx, scale.ty);
+// layout() works out where everything goes, at 1× (the screen mapping `map`), as a plan; paint()
+// draws a plan through a transform. A frozen frame keeps its plan and repaints it on every frame of a
+// pinch or drag, so zooming enlarges boxes and labels like a page, without rearranging them.
+function layout(result, map) {
   const P = (x, y) => [map.ox + x * map.s, map.oy + y * map.s];
-  const outline = (box) => {
-    octx.beginPath();
-    box.forEach(([x, y], i) => (i ? octx.lineTo : octx.moveTo).call(octx, ...P(x, y)));
-    octx.closePath();
-    octx.stroke();
-  };
-  // Lines too small to label (live mode doesn't read them): a faint dashed hint to move closer.
-  octx.setLineDash([4, 4]);
-  octx.lineWidth = 1;
-  octx.strokeStyle = "rgba(255,255,255,0.4)";
-  result.skipped.forEach(outline);
-  octx.setLineDash([]);
-  octx.lineWidth = 1.5;
-  octx.strokeStyle = "rgba(255,255,255,0.75)";
-  result.lines.forEach((line) => outline(line.box));
-
   const texts = result.lines.map((line) => line.box.map(([x, y]) => P(x, y)));
+  const plan = { skipped: result.skipped.map((box) => box.map(([x, y]) => P(x, y))), boxes: texts, groups: [] };
   const rows = []; // label rows placed so far (screen polygons)
-  const drawn = { lines: 0, labels: 0, crowded: 0, over: 0, overlaps: 0, collisions: 0, min: Infinity, max: 0, bigShrink: 1 };
+  const drawn = (plan.stats = { lines: 0, labels: 0, crowded: 0, over: 0, overlaps: 0, collisions: 0, min: Infinity, max: 0, bigShrink: 1 });
   const vw = view.clientWidth, vh = view.clientHeight;
-  octx.textBaseline = "middle";
   // Biggest text first: its row is the hardest to place.
   const order = result.lines.map((_, k) => k).sort((a, b) => Math.hypot(...result.lines[b].B) - Math.hypot(...result.lines[a].B));
   for (const k of order) {
     const line = result.lines[k], note = result.notes[k];
     if (!note) continue;
-    // Off screen (a zoomed-in still): no labels.
     const xs = texts[k].map((p) => p[0]), ys = texts[k].map((p) => p[1]);
-    if (Math.max(...xs) < 0 || Math.min(...xs) > vw || Math.max(...ys) < 0 || Math.min(...ys) > vh) continue;
+    if (Math.max(...xs) < 0 || Math.min(...xs) > vw || Math.max(...ys) < 0 || Math.min(...ys) > vh) continue; // off screen
     const labels = note.units
       .map((u) => ({ text: labelFor(u, result.lang), cs: line.chars.slice(u.i, u.i + u.n) }))
       .filter((l) => l.text && l.cs.length);
@@ -364,16 +384,14 @@ function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
 
     if (line.vertical) {
       const size = base;
-      octx.font = font(size);
-      for (const [i, l] of labels.entries()) {
-        const [x, y] = centres[i];
-        const w = (w100[i] * size) / 100;
-        octx.fillStyle = "rgba(0,0,0,0.6)";
-        octx.fillRect(x + thick / 2 + 1, y - size * 0.65, w + 6, size * 1.3);
-        octx.fillStyle = "#ffe066";
-        octx.textAlign = "left";
-        octx.fillText(l.text, x + thick / 2 + 4, y);
-      }
+      plan.groups.push({
+        size, over: false,
+        rects: labels.map((l, i) => {
+          const w = (w100[i] * size) / 100 + 6;
+          return { cx: centres[i][0] + thick / 2 + 1 + w / 2, cy: centres[i][1], angle: 0, w, h: size * 1.3 };
+        }),
+        items: labels.map((l, i) => ({ text: l.text, x: centres[i][0] + thick / 2 + 4, y: centres[i][1], angle: 0, align: "left" })),
+      });
       Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, size), max: Math.max(drawn.max, size) });
       continue;
     }
@@ -384,7 +402,7 @@ function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
     const t = centres.map(([x, y]) => (x - cx) * an[0] + (y - cy) * an[1]);
     const need = w100.reduce((a, b) => a + b, 0) / 100 + LABEL_GAP * (labels.length - 1);
     const fit = Math.max(MIN_LABEL, Math.min(base, Math.min(len + thick, vw - 8) / need));
-    const layout = (size, side) => {
+    const place = (size, side) => {
       const w = w100.map((v) => (v * size) / 100);
       let x = spread(t, w, LABEL_GAP * size);
       let lo = Math.min(...x.map((xi, i) => xi - w[i] / 2)) - 4, hi = Math.max(...x.map((xi, i) => xi + w[i] / 2)) + 4;
@@ -410,17 +428,17 @@ function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
     const floor = big ? Math.max(MIN_LABEL, fit * 0.75) : MIN_LABEL;
     let row = null;
     for (let size = fit; !row && size >= floor; size = size > floor && size * 0.85 < floor ? floor : size * 0.85) {
-      row = [layout(size, -1), layout(size, 1)].find((r) => r.clear);
+      row = [place(size, -1), place(size, 1)].find((r) => r.clear);
     }
     if (!row && big) {
       // Centred on the line itself, if that doesn't land on another row; else the least bad spot.
-      const over = { ...layout(fit, 0), over: true };
-      row = rows.some((r) => overlaps(over.poly, r)) ? [over, layout(floor, -1), layout(floor, 1)].sort((a, b) => a.cost() - b.cost())[0] : over;
+      const over = { ...place(fit, 0), over: true };
+      row = rows.some((r) => overlaps(over.poly, r)) ? [over, place(floor, -1), place(floor, 1)].sort((a, b) => a.cost() - b.cost())[0] : over;
       if (row.over) drawn.over++;
       else drawn.crowded++;
     }
     if (!row) {
-      row = [layout(MIN_LABEL, -1), layout(MIN_LABEL, 1)].sort((a, b) => a.cost() - b.cost())[0];
+      row = [place(MIN_LABEL, -1), place(MIN_LABEL, 1)].sort((a, b) => a.cost() - b.cost())[0];
       drawn.crowded++;
     }
     if (big) drawn.bigShrink = Math.min(drawn.bigShrink, row.size / fit);
@@ -429,34 +447,73 @@ function draw(result, map, scale = { s: 1, tx: 0, ty: 0 }) {
 
     const angle = Math.atan2(an[1], an[0]);
     const [bx, by] = row.at((row.lo + row.hi) / 2, 0);
-    octx.save();
-    octx.translate(bx, by);
-    octx.rotate(angle);
-    // Over the text: no backing, so the characters show between the letters; outlined labels instead.
-    if (!row.over) {
-      octx.fillStyle = "rgba(0,0,0,0.6)";
-      octx.fillRect(-(row.hi - row.lo) / 2, -row.size * 0.7, row.hi - row.lo, row.size * 1.4);
-    }
-    octx.restore();
-    octx.font = font(row.size);
-    octx.textAlign = "center";
-    octx.fillStyle = "#ffe066";
-    octx.strokeStyle = "rgba(0,0,0,0.85)";
-    octx.lineWidth = Math.max(2, row.size * 0.16);
-    octx.lineJoin = "round";
-    for (const [i, l] of labels.entries()) {
-      const [x, y] = row.at(row.x[i], 0);
-      octx.save();
-      octx.translate(x, y);
-      octx.rotate(angle);
-      if (row.over) octx.strokeText(l.text, 0, 0);
-      octx.fillText(l.text, 0, 0);
-      octx.restore();
-      if (i && row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;
-    }
+    plan.groups.push({
+      size: row.size,
+      over: !!row.over, // over the text: no backing, so the characters show between the letters; outlined labels instead
+      rects: row.over ? [] : [{ cx: bx, cy: by, angle, w: row.hi - row.lo, h: row.size * 1.4 }],
+      items: labels.map((l, i) => {
+        const [x, y] = row.at(row.x[i], 0);
+        return { text: l.text, x, y, angle, align: "center" };
+      }),
+    });
+    for (let i = 1; i < labels.length; i++) if (row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;
     Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, row.size), max: Math.max(drawn.max, row.size) });
   }
-  stats.labels = { ...drawn, min: drawn.min * scale.s, max: drawn.max * scale.s }; // on-screen px
+  return plan;
+}
+
+function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
+  sizeCanvas(overlay);
+  octx.transform(scale.s, 0, 0, scale.s, scale.tx, scale.ty);
+  const outline = (pts) => {
+    octx.beginPath();
+    pts.forEach(([x, y], i) => (i ? octx.lineTo(x, y) : octx.moveTo(x, y)));
+    octx.closePath();
+    octx.stroke();
+  };
+  // Lines too small to label (live mode doesn't read them): a faint dashed hint to move closer.
+  octx.setLineDash([4, 4]);
+  octx.lineWidth = 1;
+  octx.strokeStyle = "rgba(255,255,255,0.4)";
+  plan.skipped.forEach(outline);
+  octx.setLineDash([]);
+  octx.lineWidth = 1.5;
+  octx.strokeStyle = "rgba(255,255,255,0.75)";
+  plan.boxes.forEach(outline);
+  octx.textBaseline = "middle";
+  octx.lineJoin = "round";
+  for (const g of plan.groups) {
+    octx.fillStyle = "rgba(0,0,0,0.6)";
+    for (const r of g.rects) {
+      octx.save();
+      octx.translate(r.cx, r.cy);
+      octx.rotate(r.angle);
+      octx.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
+      octx.restore();
+    }
+    octx.font = font(g.size);
+    octx.fillStyle = "#ffe066";
+    octx.strokeStyle = "rgba(0,0,0,0.85)";
+    octx.lineWidth = Math.max(2, g.size * 0.16);
+    for (const t of g.items) {
+      octx.save();
+      octx.translate(t.x, t.y);
+      octx.rotate(t.angle);
+      octx.textAlign = t.align;
+      if (g.over) octx.strokeText(t.text, 0, 0);
+      octx.fillText(t.text, 0, 0);
+      octx.restore();
+    }
+  }
+  stats.labels = { ...plan.stats, min: plan.stats.min * scale.s, max: plan.stats.max * scale.s }; // on-screen px
+}
+
+// The live overlay: laid out and painted at once. The plan is kept for the shutter, which shows these
+// labels on the frozen frame until its own read is done.
+let livePlan = null;
+function draw(result, map) {
+  livePlan = layout(result, map);
+  paint(livePlan);
 }
 
 // Fill the list of lines with ruby text; the list button (#list) shows it.
@@ -565,15 +622,14 @@ statusEl.addEventListener("click", () => {
 // Live: pinch or the slider. With the camera's own zoom where the browser has it; otherwise digital,
 // where the video is scaled up with CSS and each read crops the middle of the frame, so the OCR sees
 // the zoomed text at the camera's full resolution (finer than the 1× read, up to ~2×).
-// Still: pinch and drag the frozen frame; while the fingers move the canvases are only transformed
-// with CSS, and when they lift the frame and its labels are drawn again sharp at the new size.
+// Still: pinch and drag the frozen frame; it is repainted on every animation frame while the fingers
+// move (the image from its full-resolution source, the labels from the plan of its read).
 // Double-tap resets either.
 // The camera's own zoom goes to 5× (telephoto lenses top out there; beyond it the camera only crops),
 // digital zoom to 3× (softer than that isn't worth it). A frozen frame zooms to 5×: its labels stay
 // sharp at any size, the picture under them doesn't.
 const DIGITAL_MAX = 3, CAMERA_MAX = 5, STILL_ZOOM_MAX = 5;
 const zoomMax = () => (hwZoom ? Math.max(DIGITAL_MAX, Math.min(CAMERA_MAX, hwZoom.max)) : DIGITAL_MAX);
-let stillDrawn = { ...sv }, overlayDrawn = { ...sv }; // the transform each canvas was drawn at
 
 let tickMax = 0;
 function applyZoom() {
@@ -630,11 +686,6 @@ async function cameraZoom(v) {
 }
 
 const viewMap = (map) => ({ s: map.s * sv.s, ox: map.ox * sv.s + sv.tx, oy: map.oy * sv.s + sv.ty });
-// CSS transform that takes a canvas drawn at transform d to the current one.
-function cssFrom(d) {
-  const f = sv.s / d.s;
-  return `translate(${sv.tx - f * d.tx}px, ${sv.ty - f * d.ty}px) scale(${f})`;
-}
 
 // The frozen frame, from its full-resolution source, at the current still zoom.
 function paintStill() {
@@ -644,27 +695,23 @@ function paintStill() {
   ctx.fillRect(0, 0, view.clientWidth, view.clientHeight);
   ctx.imageSmoothingQuality = "high";
   ctx.drawImage(src, rect.sx, rect.sy, rect.sw, rect.sh, m.ox, m.oy, rect.sw * k * m.s, rect.sh * k * m.s);
-  stillDrawn = { ...sv };
-  still.style.transform = "";
 }
 
+// The frozen frame and its labels (its own read's, or the live ones until that is done).
 function redrawStill() {
   if (!lastStill) return;
   paintStill();
-  if (lastStill.result) {
-    draw(lastStill.result, lastStill.map, sv);
-    overlayDrawn = { ...sv };
-  }
-  overlay.style.transform = cssFrom(overlayDrawn);
+  if (lastStill.plan) paint(lastStill.plan, sv);
   stats.zoom = { ...stats.zoom, still: sv.s, pan: [sv.tx, sv.ty] };
 }
 
+// During a pinch or drag: at most one repaint per animation frame.
+let stillFrame = 0;
 function setStillView(next) {
   const s = Math.min(STILL_ZOOM_MAX, Math.max(1, next.s));
   const vw = view.clientWidth, vh = view.clientHeight;
   sv = { s, tx: Math.min(0, Math.max(vw * (1 - s), next.tx)), ty: Math.min(0, Math.max(vh * (1 - s), next.ty)) };
-  still.style.transform = cssFrom(stillDrawn);
-  overlay.style.transform = cssFrom(overlayDrawn);
+  stillFrame ||= requestAnimationFrame(() => { stillFrame = 0; redrawStill(); });
 }
 
 const fingers = new Map(); // pointerId -> [x, y]
@@ -800,23 +847,22 @@ async function readStill(src, w, h, fit, keep = false) {
   keep &&= mode === "live" && !overlay.classList.contains("faded");
   setMode("still");
   loopToken++;
-  stopGate(keep);
+  stopGate();
   setShutter("Back to live camera", "Live");
   const { image, map, rect, k } = grab(src, w, h, STILL_MAX, fit);
-  lastStill = { src, w, h, fit, map, rect, k, result: null };
+  // The live labels (same screen mapping: the same part of the same frame) until this read is done.
+  lastStill = { src, w, h, fit, map, rect, k, result: null, plan: keep ? livePlan : null };
   sv = { s: 1, tx: 0, ty: 0 };
-  paintStill();
+  if (!keep) sizeCanvas(overlay);
+  overlay.style.transform = "";
+  redrawStill();
   still.hidden = false;
-  if (!keep) {
-    sizeCanvas(overlay);
-    overlay.style.transform = ""; // kept live labels keep their drift offset until the new ones
-  }
-  overlayDrawn = { ...sv };
   setStatus("Reading…");
   try {
     const r = await read(image, STILL_DET);
     if (mode !== "still" || lastStill.src !== src) return;
     lastStill.result = r;
+    lastStill.plan = layout(r, map);
     redrawStill(); // at whatever zoom the fingers have reached meanwhile
     fillSheet(r);
     setStatus(timing(r));
@@ -866,7 +912,7 @@ function setLang(l) {
   lang = l;
   try { localStorage.setItem("lang", l); } catch {}
   document.querySelectorAll("[data-lang]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === l)));
-  ensureModels(l).catch((e) => setStatus(e, true));
+  ensureModels(l).then(() => l === lang && showReady(), (e) => setStatus(e, true));
   if (mode === "live") gate.read = null; // the overlay is in the old language: read again
   if (mode === "still" && lastStill) readStill(lastStill.src, lastStill.w, lastStill.h, lastStill.fit);
 }

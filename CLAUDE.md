@@ -15,7 +15,7 @@ node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
 npm run e2e                             # Playwright, headless Chromium, fake camera (~1 min)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (static, calendar, carton, zoom, pan, tremor, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, zoom, pan, tremor, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
 uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton  # regenerate these test images
@@ -47,6 +47,7 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
 - **Live loop (`app.js`):** reads are gated, not continuous.
   - `sample()` runs every `GATE_MS` and compares normalised grey thumbnails (`thumbnail()`, `compare()` with a ±`SEARCH` px shift search), setting `gate.state` to moving, ready or idle and `gate.fast`.
   - "Same scene" means the residual after the best shift is under `2 × gate.noise + 0.1`. `gate.noise` is a running average of that residual while steady, so big sharp text tolerates more jitter.
+  - The thumbnail is `THUMB_W / zoom` px wide, and the shift search scales with it. The thresholds are in thumbnail px, so they mean the same hand movement at any zoom. The e2e `tremor` scene checks that 2× is judged like 1×.
   - `FAST_PX` (per sample) fades the overlay. Below `STEADY_PX` for `SETTLE` samples the view counts as steady. A read happens once drift since the last read exceeds `CHANGE_PX`, or the scene changes.
   - `liveLoop` reads only in `ready`, with a duty-cycle gap (`MIN_GAP`, and at least the last read's duration).
   - `#overlay` gets the `faded` class on fast moves, and otherwise a CSS translate that follows the drift.
@@ -56,18 +57,27 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Range: up to `CAMERA_MAX` (5) with camera zoom (iOS Safari reports 0.5–10×), `DIGITAL_MAX` (3) without, and `STILL_ZOOM_MAX` (5) for frozen frames.
   - The slider's marks are rebuilt in `applyZoom()` for the current range. `wakeZoombar()` shows it in full for 2 s; at rest it's a line.
   - Digital zoom scales `#cam` with CSS and passes `dzoom` to `visibleRect()`, which `grab()` and `thumbnail()` use, so reads and the motion gate see the same crop.
-  - The shutter freezes the visible rectangle as a full-resolution `ImageBitmap`. `lastStill` keeps `src`, `rect`, `k`, `map` and `result`.
-  - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). During a gesture, `#still` and `#overlay` only get a CSS transform (`cssFrom()` relative to the transform each was drawn at). On lift, `redrawStill()` repaints the image from the source and calls `draw(result, map, sv)`. `draw()` works the layout out at 1× and paints it through the `sv` transform, so zooming enlarges boxes and labels like a page and never rearranges them.
+  - The shutter freezes the visible rectangle as a full-resolution `ImageBitmap`. `lastStill` keeps `src`, `rect`, `k`, `map`, `result` and `plan`.
+  - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). `setStillView()` repaints on the next animation frame: `paintStill()` draws the image from its source, and `paint(lastStill.plan, sv)` draws the labels. No CSS stretching: a stretched canvas only covers the area it was drawn for.
+  - `lastStill.plan` is computed once per read with `layout()`. Until the still's read is done, it's the last live plan (`livePlan`). Zooming therefore enlarges boxes and labels like a page and never rearranges them.
+  - `sizeCanvas()` only reallocates a canvas when its size changes, because frames repaint during a pinch.
   - Gestures are pointer events on `#view` (`touch-action: none`, Safari `gesturestart` cancelled). Double-tap resets.
-  - `draw()` skips lines entirely off screen and only shifts a row back on screen when its line's centre is on screen.
+  - `layout()` skips lines entirely off screen and only shifts a row back on screen when its line's centre is on screen.
   - The e2e `zoom` scene drives multi-touch through CDP `Input.dispatchTouchEvent`.
-- **Labels (`draw()` in `app.js`):**
+- **Downloads:**
+  - On `init`, `ocr-worker.js` fetches the runtime `.wasm` itself and hands it over as `ort.env.wasm.wasmBinary`. It downloads the detector and the current language's recognizer in parallel, all through `download()`, which posts `progress` events.
+  - `reading-worker.js` does the same for the kuromoji dictionary (`fetchDictionary()`).
+  - `onProgress()` in `app.js` sums them into one bar (`#progress`); `showReady()` runs when the models have actually loaded.
+  - A failed first `init` is retried by the next `ensureModels()`.
+  - The e2e `download` scene throttles `.onnx` and `.wasm` files.
+- **Labels (`layout()` / `paint()` in `app.js`):**
   - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, clamped to `MIN_LABEL`..`MAX_LABEL`) and shrunk so the row fits the line and the screen.
   - Labels are placed by `spread()`: an isotonic-regression least-squares fit, so labels never overlap within a row.
   - Rows are placed biggest line first: above, else below, else smaller. `overlaps()` is a separating-axis test against other lines' boxes and placed rows.
   - Rows of `OVERLAY_MIN` px and up shrink to 3/4 at most, then go over their own line (`row.over`: outlined, no backing).
   - Smaller rows shrink to `MIN_LABEL`, then the side with the least `overlapArea` wins. The e2e `carton` scene (stacked headlines) pins the overlay case.
   - Vertical lines get furigana-style labels to the right.
+  - `layout()` returns a plan (box outlines, label groups with backing rects and text positions). `paint()` draws a plan through a transform, and `draw()` = both, for live mode.
   - `cjkStats.labels` (lines, labels, crowded, overlaps, min/max size) is what the e2e checks read.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.
 - **Position contract between the two halves:** each OCR line has `chars: [{c, x, y}]`, one entry per code point of `text`. Each reading unit `{i, n, parts, roman}` indexes code points of that same text, and `app.js` places a label at `line.chars.slice(u.i, u.i + u.n)`. So reading code must keep the code-point count unchanged. `fixDash` (ー→一) swaps one character for one character.
@@ -83,6 +93,6 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - It adds the COOP/COEP headers that WASM threads (SharedArrayBuffer) need, since GitHub Pages can't send them. `app.js` reloads once to become cross-origin isolated, using the sessionStorage key `coi-reload`.
   - Two caches:
     - `SHELL`: app code, network-first with `no-cache`.
-    - `ASSETS`: anything under `/models/` or `/vendor/`, cache-first.
+    - `ASSETS`: anything under `/models/` or `/vendor/`, cache-first. A miss is stored with `event.waitUntil` while it streams to the page. Awaiting `cache.put()` first would hold back every byte until the download finished, which breaks the progress bar.
   - **Bump `ASSETS` whenever model or vendor files change**, or installed apps keep the old ones.
   - A new top-level app file also needs adding to `SHELL_FILES`.

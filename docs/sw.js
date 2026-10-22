@@ -33,12 +33,14 @@ function isolate(res) {
   return new Response(res.body, { status: res.status, statusText: res.statusText, headers });
 }
 
-// Models, ORT and dictionaries: cache-first.
-async function cacheFirst(req) {
+// Models, ORT and dictionaries: cache-first. A download is stored in the background while it streams
+// to the page; waiting for the cache first would hold back every byte (and the progress bar) until
+// the whole file had arrived.
+async function cacheFirst(req, event) {
   const hit = await caches.match(req); // any cache: the small vendor scripts are precached in SHELL
   if (hit) return hit;
   const res = await fetch(req);
-  if (res.ok) await (await caches.open(ASSETS)).put(req, res.clone());
+  if (res.ok) event.waitUntil(caches.open(ASSETS).then((c) => c.put(req, res.clone())));
   return res;
 }
 
@@ -61,5 +63,5 @@ self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
   const heavy = /\/(models|vendor)\//.test(url.pathname);
-  e.respondWith((heavy ? cacheFirst : networkFirst)(e.request).then(isolate));
+  e.respondWith((heavy ? cacheFirst(e.request, e) : networkFirst(e.request)).then(isolate));
 });

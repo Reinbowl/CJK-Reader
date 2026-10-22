@@ -20,12 +20,19 @@ const TYPES = {
   ".json": "application/json", ".webmanifest": "application/manifest+json", ".png": "image/png",
   ".wasm": "application/wasm", ".txt": "text/plain; charset=utf-8", ".gz": "application/gzip",
 };
-const server = createServer((req, res) => {
+let throttle = false; // the "download" scene: models and the runtime at ~1.5 MB/s, like a slow phone connection
+const server = createServer(async (req, res) => {
   let file = join(docs, decodeURIComponent(new URL(req.url, "http://x").pathname));
   if (file.endsWith("/")) file += "index.html";
   if (!file.startsWith(docs) || !existsSync(file) || statSync(file).isDirectory()) return res.writeHead(404).end();
-  res.writeHead(200, { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream" });
-  res.end(readFileSync(file));
+  const body = readFileSync(file);
+  res.writeHead(200, { "Content-Type": TYPES[extname(file)] ?? "application/octet-stream", "Content-Length": body.length });
+  if (!throttle || !/\.(onnx|wasm)$/.test(file)) return res.end(body);
+  for (let o = 0; o < body.length; o += 64 * 1024) {
+    res.write(body.subarray(o, o + 64 * 1024));
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  res.end();
 });
 await new Promise((r) => server.listen(0, r));
 const base = `http://localhost:${server.address().port}/`;
@@ -75,7 +82,7 @@ const repeat = (f, n) => Array(n).fill(f);
 const zh = image("zh");
 const pan = [...repeat(frame(zh), 20), ...Array.from({ length: 8 }, (_, k) => frame(zh, 30 * (k + 1))), ...repeat(frame(zh, 240), 30)];
 let seed = 7;
-const jitter = () => Math.round(8 * ((seed = (seed * 16807) % 2147483647) / 2147483647) - 4); // -4..4 px
+const jitter = () => Math.round(14 * ((seed = (seed * 16807) % 2147483647) / 2147483647) - 7); // -7..7 px
 const clips = {
   static: writeY4M("static", [frame(zh)]),
   calendar: writeY4M("calendar", [frame(image("calendar"), 0, 490)]),
@@ -290,10 +297,20 @@ async function tremorScene() {
   const reads = log.at(-1).reads - log[0].reads;
   const shown = log.filter((e) => !e.faded).length / log.length;
   const s = await stats(page);
-  console.log(`    ${reads} re-reads in 6 s, labels shown ${(100 * shown).toFixed(0)} % of the time, ${s.lines} lines`);
+  const moving = log.filter((e) => e.gate === "moving").length / log.length;
+  console.log(`    ${reads} re-reads in 6 s, labels shown ${(100 * shown).toFixed(0)} %, "moving" ${(100 * moving).toFixed(0)} % of the time, ${s.lines} lines`);
   await shot(page, "tremor-live");
   check(shown >= 0.8, "labels stay up through the tremor");
   check(reads <= 2, "tremor doesn't trigger re-reads");
+  // Zoomed in 2×, the same shake moves the picture twice as far; the gate should take that in its stride.
+  const before = await stats(page);
+  await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await until(page, (n) => self.cjkStats.reads > n, before.reads);
+  const zlog = await watch(page, 5000);
+  const zreads = zlog.at(-1).reads - zlog[0].reads, zshown = zlog.filter((e) => !e.faded).length / zlog.length;
+  const zmoving = zlog.filter((e) => e.gate === "moving").length / zlog.length;
+  console.log(`    at 2×: ${zreads} re-reads in 5 s, labels shown ${(100 * zshown).toFixed(0)} %, "moving" ${(100 * zmoving).toFixed(0)} % of the time`);
+  check(zshown >= 0.8 && zreads <= 2 && zmoving <= moving + 0.15, "zoomed in 2×, the same tremor is judged as at 1×");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -378,6 +395,17 @@ async function zoomScene() {
   await page.click("#shutter");
   await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n && !self.cjkStats.reading, before.reads);
   const st = await stats(page);
+  // Zoom out from 2× during one pinch: the frame is repainted as the fingers move, so no part of the
+  // view is left uncovered (a CSS-stretched canvas would shrink and show what's behind it).
+  await pinch(195, 420, 80, 160);
+  await until(page, () => self.cjkStats.zoom.still > 1.8);
+  await touch("touchStart", [[195 - 80, 420], [195 + 80, 420]]);
+  await touch("touchMove", [[195 - 60, 420], [195 + 60, 420]]);
+  await page.waitForTimeout(100);
+  const midPinch = await page.evaluate(() => ({ still: getComputedStyle(document.querySelector("#still")).transform, overlay: getComputedStyle(document.querySelector("#overlay")).transform, zoom: self.cjkStats.zoom.still }));
+  await touch("touchEnd", []);
+  console.log(`    mid-pinch: ${JSON.stringify(midPinch)}`);
+  check(midPinch.still === "none" && midPinch.overlay === "none" && midPinch.zoom < 1.8, "mid-pinch the frozen frame is repainted, not stretched");
   await pinch(195, 420, 80, 240);
   await until(page, () => self.cjkStats.zoom.still > 2);
   const zs = await stats(page);
@@ -399,8 +427,30 @@ async function zoomScene() {
   await browser.close();
 }
 
+async function downloadScene() {
+  console.log("-- first visit on a slow connection: one progress bar, start early, no errors");
+  throttle = true;
+  const { browser, page, errors } = await open(clips.static);
+  await until(page, () => self.cjkStats.download && !self.cjkStats.download.done);
+  const first = await page.evaluate(() => ({ text: document.querySelector("#progress p").textContent, pct: self.cjkStats.download.pct }));
+  await page.waitForTimeout(1000);
+  const later = await page.evaluate(() => self.cjkStats.download.pct);
+  console.log(`    "${first.text}", ${first.pct.toFixed(0)} % then ${later.toFixed(0)} %`);
+  check(/Downloading .* \/ (1[5-9]|2\d)\.\d MB/.test(first.text), "the start screen shows one download, runtime and models together");
+  check(later > first.pct, "and it moves");
+  await page.click("#go");
+  await until(page, () => /Downloading… \d+ %|Preparing/.test(document.querySelector("#status").textContent));
+  check(true, "started early, the status line carries on with the download");
+  await until(page, () => self.cjkStats.reads >= 1, null, 120000);
+  const s = await stats(page);
+  check(s.download.ready && s.lines > 0, `then it reads (${s.lines} lines)`);
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  throttle = false;
+  await browser.close();
+}
+
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {
