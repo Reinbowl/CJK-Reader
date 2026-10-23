@@ -15,13 +15,13 @@ node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
 npm run e2e                             # Playwright, headless Chromium, fake camera (~1 min)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, zoom, pan, tremor, wander, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, page, zoom, pan, tremor, wander, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
-uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton  # regenerate these test images
+uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page  # regenerate these test images
 ```
 
-**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar and carton scenes only need `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
+**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar, carton and page scenes only need `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
 
 **`npm run e2e`:**
 - Plays Y4M clips that `test/e2e.test.mjs` writes into `.cache/e2e/` (608×1080 portrait; the fake device crops anything taller to the 1080 px the app requests).
@@ -71,14 +71,15 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - A failed first `init` is retried by the next `ensureModels()`.
   - The e2e `download` scene throttles `.onnx` and `.wasm` files.
 - **Labels (`layout()` / `paint()` in `app.js`):**
-  - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, clamped to `MIN_LABEL`..`MAX_LABEL`) and shrunk so the row fits the line and the screen.
+  - One row per horizontal line, its font from the line's thickness (`LABEL_SCALE`, at most `MAX_LABEL`) and shrunk so the row fits the line and the screen. There's no minimum size: small print gets small pinyin.
   - Labels are placed by `spread()`: an isotonic-regression least-squares fit, so labels never overlap within a row.
-  - Rows are placed biggest line first: above, else below, else smaller. `overlaps()` is a separating-axis test against other lines' boxes and placed rows.
+  - Rows are placed biggest line first, lines within 15 % of the same size top to bottom. Each side's biggest clear size is found (`largest()`); above wins unless below is bigger (for small rows, more than 1/0.7 bigger, so a paragraph's rows don't flip sides on sub-pixel gap differences). `overlaps()` is a separating-axis test against other lines' boxes and placed rows.
   - Rows of `OVERLAY_MIN` px and up shrink to 3/4 at most, then go over their own line (`row.over`: outlined, no backing).
-  - Smaller rows shrink to `MIN_LABEL`, then the side with the least `overlapArea` wins. The e2e `carton` scene (stacked headlines) pins the overlay case.
+  - Smaller rows shrink to 1/4, then the side with the least `overlapArea` wins. The e2e `carton` scene (stacked headlines) pins the overlay case.
+  - `paint()` fades each row in by its on-screen size (`g.size × scale.s`): hidden below `FADE_FROM` (4 px), full from `LEGIBLE` (6 px). A line whose row isn't fully shown gets the dashed outline, like live mode's skipped lines: zoom in. Outlines keep their on-screen width at any zoom. The e2e `page` scene (a dense paragraph) checks rows are hidden at 1× and all shown at 4× on the same layout.
   - Vertical lines get furigana-style labels to the right.
   - `layout()` returns a plan (box outlines, label groups with backing rects and text positions). `paint()` draws a plan through a transform, and `draw()` = both, for live mode.
-  - `cjkStats.labels` (lines, labels, crowded, overlaps, min/max size) is what the e2e checks read.
+  - `cjkStats.labels` (lines, labels, crowded, below, overlaps, hidden at this zoom, min/max size) is what the e2e checks read.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.
 - **Position contract between the two halves:** each OCR line has `chars: [{c, x, y}]`, one entry per code point of `text`. Each reading unit `{i, n, parts, roman}` indexes code points of that same text, and `app.js` places a label at `line.chars.slice(u.i, u.i + u.n)`. So reading code must keep the code-point count unchanged. `fixDash` (ー→一) swaps one character for one character.
 - **One read at a time:** every session run and creation in `ocr-worker.js` goes through `serial()`.

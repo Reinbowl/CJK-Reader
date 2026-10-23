@@ -1,7 +1,7 @@
 """Render synthetic sign/label photos with known text for checking the OCR pipeline.
 
     uv run tools/make_test_images.py --fonts /path/to/noto-cjk-otfs
-    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton   # just these
+    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page   # just these
 
 Writes test/images/*.png and test/images/truth.json (entries for scenes not rendered are kept).
 """
@@ -116,13 +116,43 @@ def render_carton(font_path, rng, size=(720, 640)):
     return img.filter(ImageFilter.GaussianBlur(0.6)), [t for t, _ in CARTON]
 
 
+# A book page: a heading over a paragraph of small text with tight leading, the case where readings
+# have only a thin gap between lines. Lines are wrapped by width, with a two-character indent.
+PAGE_TITLE = "读书的乐趣"
+PAGE_TEXT = ("学习一门新的语言需要时间，也需要耐心。刚开始的时候，很多字都不认识，读一句话要查好几次字典。"
+             "但是只要每天坚持读一点，慢慢就会发现，自己能看懂的东西越来越多。书店里的小说、街上的招牌、"
+             "朋友发来的消息，都变成了练习的材料。遇到不会读的字，可以用手机拍下来，看看它的拼音，再大声地"
+             "念几遍。这样的方法虽然简单，却非常有效。语言不只是一种工具，更是一扇通往另一种文化的窗户。"
+             "每读懂一句话，你就离那个世界更近了一步。")
+
+
+def render_page(font_path, rng, size=(1100, 560)):
+    w, h = size
+    base = np.full((h, w, 3), (238, 236, 230), np.uint8)
+    img = Image.fromarray(np.clip(base + rng.normal(0, 4, base.shape), 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(img)
+    ink = (35, 35, 35)
+    d.text((w // 2, 90), PAGE_TITLE, font=ImageFont.truetype(str(font_path), 60), fill=ink, anchor="mm")
+    font, px, pitch, left, right = ImageFont.truetype(str(font_path), 24), 24, 36, 70, w - 70
+    lines, line, x0 = [], "", left + 2 * px
+    for ch in PAGE_TEXT:
+        if x0 + font.getlength(line + ch) > right:
+            lines.append((x0, line))
+            line, x0 = "", left
+        line += ch
+    lines.append((x0, line))
+    for i, (x, text) in enumerate(lines):
+        d.text((x, 180 + i * pitch), text, font=font, fill=ink)
+    return img.filter(ImageFilter.GaussianBlur(0.6)), [PAGE_TITLE] + [t for _, t in lines]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fonts", required=True, type=Path)
     ap.add_argument("--scenes", nargs="*", help="only render these (default: all)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    want = set(args.scenes or [*SCENES, "calendar", "carton"])
+    want = set(args.scenes or [*SCENES, "calendar", "carton", "page"])
     rng = np.random.default_rng(7)
     random.seed(7)
     truth_path = OUT / "truth.json"
@@ -142,6 +172,10 @@ def main():
         img, lines = render_carton(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(13))
         img.save(OUT / "carton.png")
         truth["carton"] = {"lang": "ja", "lines": lines}
+    if "page" in want:
+        img, lines = render_page(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(17))
+        img.save(OUT / "page.png")
+        truth["page"] = {"lang": "zh", "lines": lines}
     truth_path.write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
     print(f"wrote {len(want)} images to {OUT}")
 

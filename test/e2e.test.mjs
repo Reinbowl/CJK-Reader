@@ -149,6 +149,22 @@ const stats = (page) => page.evaluate(() => structuredClone(self.cjkStats));
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout, polling: 50 });
 const shot = (page, name) => page.screenshot({ path: join(out, `${name}.png`) });
 
+// Multi-touch through CDP: touch(type, points), and a two-finger pinch around (cx, cy) whose
+// fingers go from d0 to d1 px apart.
+async function fingers(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const touch = (type, pts) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
+  const pinch = async (cx, cy, d0, d1) => {
+    await touch("touchStart", [[cx - d0 / 2, cy], [cx + d0 / 2, cy]]);
+    for (let i = 1; i <= 10; i++) {
+      const d = d0 + ((d1 - d0) * i) / 10;
+      await touch("touchMove", [[cx - d / 2, cy], [cx + d / 2, cy]]);
+    }
+    await touch("touchEnd", []);
+  };
+  return { touch, pinch };
+}
+
 // The zoom slider, as if dragged to z.
 const setSlider = (page, z) => page.$eval("#zoom", (el, z) => { el.value = String(z); el.dispatchEvent(new Event("input", { bubbles: true })); }, z);
 
@@ -378,19 +394,36 @@ async function cartonScene() {
   await browser.close();
 }
 
+async function pageScene() {
+  console.log("-- book page (photo): readings sized to their lines, shown once zoomed in");
+  const { browser, page, errors } = await open(clips.static);
+  await page.setInputFiles("#file", join(root, "test/images/page.png"));
+  await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads >= 1, null, 120000);
+  const one = (await stats(page)).labels;
+  console.log(`    1×: ${JSON.stringify(one)}`);
+  await shot(page, "page-1x");
+  const lines = truth.page.lines.length;
+  check(one.lines === lines && one.overlaps === 0 && one.crowded === 0, `every line laid out (${one.lines}/${lines}), none crowded or overlapping`);
+  // The short last line may take the free space under it: nothing there to mistake it for.
+  check(one.below <= 1, `rows sit above their own lines (${one.below} below)`);
+  check(one.hidden === lines - 1, `at 1× only the heading's readings are big enough to show (${one.hidden} hidden)`);
+  // Pinch the paragraph to 4×: the same rows, now big enough to read.
+  const { pinch } = await fingers(page);
+  await pinch(195, 200, 60, 240);
+  await until(page, () => self.cjkStats.zoom.still > 3.5);
+  const four = await stats(page);
+  console.log(`    ${four.zoom.still.toFixed(1)}×: ${JSON.stringify(four.labels)}`);
+  await shot(page, "page-4x");
+  const same = ["lines", "labels", "crowded", "over", "below"].every((k) => four.labels[k] === one[k]);
+  check(same && four.labels.hidden === 0, "zoomed in, every row is shown, with the same layout");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 async function zoomScene() {
   console.log("-- zoom: slider and pinch live, pinch and pan the frozen frame, double-tap resets");
   const { browser, page, errors } = await open(clips.calendar);
-  const cdp = await page.context().newCDPSession(page);
-  const touch = (type, pts) => cdp.send("Input.dispatchTouchEvent", { type, touchPoints: pts.map(([x, y], id) => ({ x, y, id })) });
-  const pinch = async (cx, cy, d0, d1) => {
-    await touch("touchStart", [[cx - d0 / 2, cy], [cx + d0 / 2, cy]]);
-    for (let i = 1; i <= 10; i++) {
-      const d = d0 + ((d1 - d0) * i) / 10;
-      await touch("touchMove", [[cx - d / 2, cy], [cx + d / 2, cy]]);
-    }
-    await touch("touchEnd", []);
-  };
+  const { touch, pinch } = await fingers(page);
   const doubleTap = async () => { await page.touchscreen.tap(195, 420); await page.touchscreen.tap(195, 420); };
   await startLive(page);
   const one = await stats(page);
@@ -475,7 +508,7 @@ async function downloadScene() {
 }
 
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

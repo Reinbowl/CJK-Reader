@@ -60,16 +60,21 @@ Labels:
 
 - **Size:** each line gets one row of labels, sized from that line's own characters, so a big
   headline gets big pinyin and small print gets small pinyin. The row font then shrinks until the
-  whole row fits the line (and the screen), but never below 8 px.
+  whole row fits the line (and the screen).
 - **Position:** each label sits as close as it can to its own characters. Labels are only pushed
   sideways as far as needed to stop them overlapping (a least-squares fit).
 - **Crowding:** the row goes above the line, or below if the space above is taken by other text or
-  another row, or shrinks to fit the gap.
+  another row, or shrinks to fit the gap. In a paragraph every row goes above its own line, so it's
+  clear which line it belongs to.
   - **Big text** shrinks to 3/4 of its size at most. Tightly stacked headlines leave no gap at all,
     so the row then goes over the line's own characters instead: outlined labels with no backing,
     so the big glyphs stay visible between the letters.
-  - **Small text** shrinks to 8 px, then goes on the side that covers least.
-  - Either way, every reading is always shown.
+  - **Small text** shrinks to fit the gap between lines, down to 1/4 of its size, and only then
+    goes on the side that covers least.
+- **Too small to read:** pinyin under 6 px on screen fades out (it's gone below 4 px), and its line
+  gets a dashed outline instead: zoom in. Pinching a frozen frame brings it back as it grows, on the
+  same layout; in live mode, zooming the camera reads it again bigger. The list always has every
+  reading.
 - **Freeze:** after the shutter, the live labels stay up while the frame is re-read at higher
   resolution, then every line gets its readings, small ones included.
 
@@ -113,7 +118,7 @@ docs/                 ← the site (GitHub Pages serves this folder)
 tools/
   prepare_models.py   download pinned models, verify sha256, int8-quantize → docs/models
   ocr_ref.py          reference pipeline in Python (PaddleOCR's own pre/post-processing), fp32 vs int8 eval
-  make_test_images.py render test/images (signs + a calendar page) from Noto CJK fonts
+  make_test_images.py render test/images (signs, a calendar page, a carton, a book page) from Noto CJK fonts
   make_icons.py       render docs/icons
   vendor.mjs          copy onnxruntime-web, pinyin-pro, wanakana, kuromoji into docs/vendor
 test/
@@ -200,9 +205,9 @@ padding.
   read Hangul, and kanji-only text can't tell Chinese from Japanese.
 - **ー vs 一:** the recognizer sometimes reads 一 (one) as ー (long-vowel mark). `reading.js` fixes
   that from the surrounding characters.
-- **Crowded text:** when a line's labels can't go above or below it without covering other text,
-  they're drawn at 8 px on the side that covers least, and can hide part of a neighbouring line.
-  The list (after the shutter) always shows every line in full.
+- **Dense small text:** a paragraph of small print leaves only a thin gap between its lines, so its
+  pinyin is tiny: the lines are outlined with dashes until you zoom in (pinch a frozen frame, or
+  zoom the camera). The list (after the shutter) always shows every line in full.
 - **Digital zoom** gets visibly soft past about 2×. The text is still read at the camera's full
   resolution, but there are only so many camera pixels in a third of the frame.
 
