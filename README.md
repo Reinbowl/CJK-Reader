@@ -7,7 +7,7 @@ first visit.
 
 - **Live:** readings float above each line of text in the camera view. It reads when the camera
   is held steady on something new, or when the text in view changes (subtitles). While nothing
-  changes it only checks now and then, less often the longer nothing changes.
+  changes it only runs the text detector now and then to check, not the full read.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
   it. The list button shows every line with ruby text, one item per line of text in the picture,
   and for Japanese the romaji under each line.
@@ -54,9 +54,10 @@ Live mode doesn't read every frame:
     before the view counts as new and is read again.
   - **Text that changes in place** (the next subtitle on a screen) is read again too, even though
     the view hasn't moved. While the view is steady and nothing else calls for a read, the detector
-    alone runs now and then, without the recognizer. The first check comes 3 detector runs' time
-    after a read (at least 0.25 s), and the checks get twice as far apart each time nothing has
-    changed, up to 2 s. Each check compares its text boxes with the last read's: a box that appeared
+    alone runs now and then, without the recognizer: every 3 detector runs' time (as long as the
+    last read's detector took), at least 0.25 s and at most 2 s apart. On a phone whose detector
+    takes 150 ms that's every 0.45 s, so the detector is busy about a third of the time while you
+    hold still. Each check compares its text boxes with the last read's: a box that appeared
     or went, or whose text looks different. That comparison is a small fingerprint of each box's
     character shapes, so a colour sweep over the same words doesn't count. Seen by two checks in a
     row, a change gets a full read. Moving pictures without text don't trigger anything. The old

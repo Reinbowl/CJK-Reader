@@ -926,12 +926,11 @@ function textChanged(ref, now) {
 }
 
 // Reads only when the motion gate says the view is steady and new, and stays at most ~50 % busy.
-// In between, while the view is steady and nothing calls for a read, the detector alone checks now and
-// then whether the text changed in place, like the next subtitle on a screen: every 3 detector runs'
-// time (as long as the last read's took), at least PROBE_MIN apart, twice as far apart after each check
-// that finds nothing new, up to PROBE_MAX. A change is checked again PROBE_MIN later, and seen by two
-// checks running (not a flicker of the detector) it calls for a read; the labels stay up until it's
-// drawn.
+// In between, while the view is steady and nothing calls for a read, the detector alone checks whether
+// the text changed in place, like the next subtitle on a screen: every 3 detector runs' time (as long
+// as the last read's took), between PROBE_MIN and PROBE_MAX apart. A change is checked again PROBE_MIN
+// later, and seen by two checks running (not a flicker of the detector) it calls for a read; the
+// labels stay up until it's drawn.
 const PROBE_MIN = 250, PROBE_MAX = 2000;
 async function liveLoop(token) {
   let next = 0, ref = null, gap = PROBE_MIN, checkAt = Infinity, seen = false;
@@ -945,8 +944,7 @@ async function liveLoop(token) {
         if (mode !== "live" || token !== loopToken) break;
         const changed = textChanged(ref, now);
         if (changed && seen) gate.renew = true;
-        // A first sighting is checked again soon; with nothing new, less and less often.
-        gap = changed ? (seen ? ref.gap : PROBE_MIN) : Math.min(PROBE_MAX, gap * 2);
+        gap = changed && !seen ? PROBE_MIN : ref.gap; // a first sighting is checked again soon
         seen = changed;
       } catch (e) {
         if (mode !== "live" || token !== loopToken) break; // cancelled by the shutter, or stopped
@@ -966,7 +964,7 @@ async function liveLoop(token) {
       stats.busy += took;
       next = performance.now() + Math.max(MIN_GAP, took);
       gate.read = at;
-      ref = { boxes: r.boxes, prints: r.prints, map, size: [image.width, image.height], gap: Math.max(PROBE_MIN, 3 * r.ms.det) };
+      ref = { boxes: r.boxes, prints: r.prints, map, size: [image.width, image.height], gap: Math.min(PROBE_MAX, Math.max(PROBE_MIN, 3 * r.ms.det)) };
       [gap, seen] = [ref.gap, false];
       checkAt = next + gap;
       overlay.style.transform = "";
