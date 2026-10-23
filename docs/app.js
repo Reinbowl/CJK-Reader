@@ -367,11 +367,11 @@ function overlapArea(p, q) {
 // Each horizontal line gets one row of labels, its font scaled to that line (big text, big labels)
 // and shrunk until the row fits the line's length; labels are then spread so none overlap. The row
 // goes above the line, or below if that is clear of other lines and rows, or shrinks to fit the
-// gap. Big text shrinks to 3/4 at most and then gets its row laid over its own characters (tightly
-// stacked headlines leave no gap, and big glyphs stay readable under a label); small text shrinks
-// to 1/4 (a dense paragraph's rows fit its thin gaps, readable once zoomed in) and then goes on the
-// side that covers least. Vertical lines get their labels to the right of each character, like
-// furigana.
+// gap. Labels readable at full size stay readable: big text shrinks to 3/4 at most, the rest to
+// LEGIBLE, and then the row goes over its own characters (tightly stacked lines leave no gap, and
+// the glyphs show through outlined labels). Fine print shrinks to 1/4 (a dense paragraph's rows fit
+// its thin gaps, readable once zoomed in) and then goes on the side that covers least. Vertical
+// lines get their labels to the right of each character, like furigana.
 // layout() works out where everything goes, at 1× (the screen mapping `map`), as a plan; paint()
 // draws a plan through a transform. A frozen frame keeps its plan and repaints it on every frame of a
 // pinch or drag, so zooming enlarges boxes and labels like a page, without rearranging them.
@@ -452,8 +452,8 @@ function layout(result, map) {
       const cost = () => others.reduce((a, b) => a + 2 * overlapArea(poly, b), 0) + rows.reduce((a, r) => a + overlapArea(poly, r), 0);
       return { size, side, w, x, lo, hi, at, poly, clear, cost };
     };
-    const big = fit >= OVERLAY_MIN;
-    const floor = fit * (big ? 0.75 : 0.25);
+    const big = fit >= OVERLAY_MIN, readable = fit >= LEGIBLE;
+    const floor = big ? fit * 0.75 : readable ? LEGIBLE : fit * 0.25;
     // Each side's biggest clear row, shrinking from fit to floor. Above wins unless below is bigger;
     // for small text, unless it's much bigger: in a paragraph, a fraction of a pixel of difference
     // between the gaps mustn't flip rows to the other side, where they'd look like the next line's.
@@ -466,7 +466,7 @@ function layout(result, map) {
     };
     const up = largest(-1), down = largest(1);
     let row = up && !(down && down.size * (big ? 1 : 0.7) > up.size) ? up : down;
-    if (!row && big) {
+    if (!row && readable) {
       // Centred on the line itself, if that doesn't land on another row; else the least bad spot.
       const over = { ...place(fit, 0), over: true };
       row = rows.some((r) => overlaps(over.poly, r)) ? [over, place(floor, -1), place(floor, 1)].sort((a, b) => a.cost() - b.cost())[0] : over;
@@ -512,11 +512,11 @@ function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
   // How much of a row shows at this zoom: none below FADE_FROM px on screen, all of it from LEGIBLE.
   const shown = (g) => Math.min(1, Math.max(0, (g.size * scale.s - FADE_FROM) / (LEGIBLE - FADE_FROM)));
   const small = new Set(plan.groups.filter((g) => shown(g) < 1).map((g) => g.line));
-  // Lines too small to read (live mode skips them) or to label at this zoom: a faint dashed hint to
-  // move closer or zoom in. Outlines stay as thin on screen at any zoom.
+  // Lines too small to read (live mode skips them) or to label at this zoom: a light yellow dashed
+  // hint to move closer or zoom in. Outlines stay as thin on screen at any zoom.
   octx.setLineDash([4 / scale.s, 4 / scale.s]);
-  octx.lineWidth = 1 / scale.s;
-  octx.strokeStyle = "rgba(255,255,255,0.4)";
+  octx.lineWidth = 1.25 / scale.s;
+  octx.strokeStyle = "rgba(255,236,150,0.9)";
   plan.skipped.forEach(outline);
   plan.boxes.forEach((b, k) => small.has(k) && outline(b));
   octx.setLineDash([]);

@@ -55,7 +55,7 @@ Live mode doesn't read every frame:
 - **Pacing:** reads are at least 250 ms apart, and the gap is never shorter than the last read
   took, so the OCR worker is busy at most half the time.
 - **Small lines:** lines thinner than 14 px on screen aren't recognised in live mode (the dev panel
-  switches between 10, 14 and 20 px). They get a dashed outline; move closer or freeze to read them.
+  switches between 10, 14 and 20 px). They get a light yellow dashed outline; move closer or freeze to read them.
 
 Labels:
 
@@ -67,13 +67,14 @@ Labels:
 - **Crowding:** the row goes above the line, or below if the space above is taken by other text or
   another row, or shrinks to fit the gap. In a paragraph every row goes above its own line, so it's
   clear which line it belongs to.
-  - **Big text** shrinks to 3/4 of its size at most. Tightly stacked headlines leave no gap at all,
-    so the row then goes over the line's own characters instead: outlined labels with no backing,
-    so the big glyphs stay visible between the letters.
-  - **Small text** shrinks to fit the gap between lines, down to 1/4 of its size, and only then
-    goes on the side that covers least.
+  - **Text whose pinyin is readable at full size** keeps it readable: big text shrinks to 3/4 of
+    its size at most, the rest to 6 px. Tightly stacked lines (headlines, video titles) leave no gap
+    at all, so the row then goes over the line's own characters instead: outlined labels with no
+    backing, so the glyphs stay visible between the letters.
+  - **Fine print** (pinyin under 6 px even at full size) shrinks to fit the gap between lines, down
+    to 1/4 of its size, and only then goes on the side that covers least.
 - **Too small to read:** pinyin under 6 px on screen fades out (it's gone below 4 px), and its line
-  gets a dashed outline instead: zoom in. Pinching a frozen frame brings it back as it grows, on the
+  gets a light yellow dashed outline instead: zoom in. Pinching a frozen frame brings it back as it grows, on the
   same layout; in live mode, zooming the camera reads it again bigger. The list always has every
   reading.
 - **Freeze:** after the shutter, the live labels stay up while the frame is re-read at higher

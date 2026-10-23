@@ -396,6 +396,21 @@ async function cartonScene() {
   await browser.close();
 }
 
+async function stackScene() {
+  console.log("-- stacked title lines (photo): every line's readings readable, over the text when there's no gap");
+  const { browser, page, errors } = await open(clips.static);
+  await page.setInputFiles("#file", join(root, "test/images/subs_a.png"));
+  await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads >= 1, null, 120000);
+  const s = (await stats(page)).labels;
+  console.log(`    labels: ${JSON.stringify(s)}`);
+  await shot(page, "stack");
+  const lines = truth.subs_a.lines.length;
+  check(s.lines === lines && s.hidden === 0 && s.crowded === 0 && s.overlaps === 0, `every line's readings are shown (${lines - s.hidden}/${lines}), none crowded or overlapping`);
+  check(s.over >= 1, "a line with no gap above or below gets its readings over its text");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 async function pageScene() {
   console.log("-- book page (photo): readings sized to their lines, shown once zoomed in");
   const { browser, page, errors } = await open(clips.static);
@@ -510,7 +525,7 @@ async function downloadScene() {
 }
 
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {
