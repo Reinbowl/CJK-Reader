@@ -6,7 +6,8 @@ the text, it doesn't translate it. Everything runs on the device, and it works o
 first visit.
 
 - **Live:** readings float above each line of text in the camera view. It reads when the camera
-  is held steady on something new, and rests while nothing changes.
+  is held steady on something new, or when the text in view changes (subtitles). While nothing
+  changes it only checks now and then, less often the longer nothing changes.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
   it. The list button shows every line with ruby text, one item per line of text in the picture,
   and for Japanese the romaji under each line.
@@ -52,10 +53,14 @@ Live mode doesn't read every frame:
   - Zoomed in, the labels follow the text for up to a quarter of the screen (about 100 px at 5×)
     before the view counts as new and is read again.
   - **Text that changes in place** (the next subtitle on a screen) is read again too, even though
-    the view hasn't moved. The gate watches small squares of the thumbnail where the last reads
-    found text: one that changes in a single step and then holds still for 0.2 s means new text.
-    Moving pictures elsewhere (the video itself) don't trigger reads. The old labels stay up until
-    the new read is drawn.
+    the view hasn't moved. While the view is steady and nothing else calls for a read, the detector
+    alone runs now and then, without the recognizer. The first check comes 3 detector runs' time
+    after a read (at least 0.25 s), and the checks get twice as far apart each time nothing has
+    changed, up to 2 s. Each check compares its text boxes with the last read's: a box that appeared
+    or went, or whose text looks different. That comparison is a small fingerprint of each box's
+    character shapes, so a colour sweep over the same words doesn't count. Seen by two checks in a
+    row, a change gets a full read. Moving pictures without text don't trigger anything. The old
+    labels stay up until the new read is drawn.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
   the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
   switches to WASM until the next launch, and the status bar says so.
@@ -202,9 +207,11 @@ padding.
 
 ## Known limitations
 
-- **Subtitles** are noticed where the last few reads found text. One that appears somewhere new is
-  read once the view moves or the shutter is pressed. A bright object moving across a plain
-  picture can look like the camera moving, and makes the app read again more often than needed.
+- **Subtitles** are read about a second after they change: the next check, a second one to confirm,
+  then the read. Lines cut off by the edge of the view aren't compared, because they show more or
+  less of themselves as the hand drifts, so a change there waits until the view moves. A bright
+  object moving across a plain picture can look like the camera moving, and makes the app read
+  again more often than needed.
 - **Japanese readings** come from a word dictionary (IPADIC via kuromoji), so unusual names or
   readings can be wrong. Sound changes in counters aren't applied (一杯 shows "ichi hai", not
   "ippai").

@@ -220,6 +220,55 @@ export function recInput(img, geoms) {
   return { data, W, widths };
 }
 
+// ---------- fingerprints (live mode: has the text in a box changed?) ----------
+
+const FP_H = 10, FP_MAX = 160;
+
+// A box's text resampled to FP_H px high (as wide as that makes it, at most FP_MAX), as an edge map:
+// shapes rather than colours, so a karaoke colour sweep over the same words isn't a change.
+// Normalised (mean 0, sd 1); len is the box's length in px.
+export function fingerprint(img, pts) {
+  const g = cropGeometry(pts);
+  const h = FP_H, w = Math.max(4, Math.min(FP_MAX, Math.round((FP_H * g.w) / g.h)));
+  const rgb = new Float32Array(3 * w * h);
+  warpInto(img, g.O, g.A, g.B, w, h, rgb, w, h, (v) => v, Math.min(4, Math.max(1, Math.round(g.h / h))));
+  const grey = (x, y) => rgb[y * w + x] + rgb[w * h + y * w + x] + rgb[2 * w * h + y * w + x];
+  const e = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const v = grey(x, y);
+      e[y * w + x] = Math.abs(grey(Math.min(w - 1, x + 1), y) - v) + Math.abs(grey(x, Math.min(h - 1, y + 1)) - v);
+    }
+  }
+  const mean = e.reduce((a, v) => a + v, 0) / e.length;
+  const sd = Math.max(3, Math.sqrt(e.reduce((a, v) => a + (v - mean) ** 2, 0) / e.length));
+  return { w, h, len: g.w, e: e.map((v) => (v - mean) / sd) };
+}
+
+// How different two fingerprints are: 0 the same, about 1 unrelated (1 - the best correlation). Lines
+// more than 15 % apart in length are different text. b is stretched to a's width first: the detector
+// finds the same line a few px taller or shorter from one frame to the next, which changes how wide
+// its fingerprint comes out. Then shifts of up to 2 px along and 1 across.
+export function printDiff(a, b) {
+  if (Math.abs(a.len - b.len) > 0.15 * Math.max(a.len, b.len)) return 1;
+  const { w, h } = a, bs = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const u = (x * (b.w - 1)) / Math.max(1, w - 1), x0 = Math.floor(u), x1 = Math.min(b.w - 1, x0 + 1);
+      bs[y * w + x] = b.e[y * b.w + x0] + (b.e[y * b.w + x1] - b.e[y * b.w + x0]) * (u - x0);
+    }
+  }
+  let best = -1;
+  for (let dy = -1; dy <= 1; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      let sum = 0, n = 0;
+      for (let y = Math.max(0, -dy); y < Math.min(h, h - dy); y++) for (let x = Math.max(0, -dx); x < Math.min(w, w - dx); x++, n++) sum += a.e[y * w + x] * bs[(y + dy) * w + x + dx];
+      best = Math.max(best, sum / Math.max(1, n));
+    }
+  }
+  return 1 - best;
+}
+
 // Greedy CTC decode. Index 0 is the blank, i maps to chars[i - 1], the last class is a space.
 export function ctcDecode(probs, n, T, C, chars) {
   const out = [];
@@ -246,7 +295,8 @@ export function ctcDecode(probs, n, T, C, chars) {
 // ---------- full pipeline ----------
 
 // ort: the onnxruntime-web module; det/rec: InferenceSessions; img: {data: RGBA, width, height}.
-// Boxes thinner than minLineH px are not recognised (too small to label) and come back in `skipped`.
+// Boxes thinner than minLineH px are not recognised (too small to label) and come back in `skipped`;
+// `boxes` is every box the detector found, recognised or not.
 // stop() is checked between model runs; once it returns true the read gives up with a "cancelled"
 // error (the shutter does this to a live read still in progress).
 export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, minLineH = 0, cols = REC_COLS, dropScore = 0.5, stop = () => false } = {}) {
@@ -292,5 +342,5 @@ export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, mi
     const g = geoms[i];
     lines.push({ text: r.text, score: r.score, box: pts, chars: r.chars, A: g.A, B: g.B, vertical: g.vertical });
   });
-  return { lines, skipped, recognised: order.length, ms: { det: t1 - t0, rec: t2 - t1 }, detSize: [di.w, di.h] };
+  return { lines, skipped, boxes, recognised: order.length, ms: { det: t1 - t0, rec: t2 - t1 }, detSize: [di.w, di.h] };
 }

@@ -197,6 +197,7 @@ async function staticScene() {
   await page.waitForTimeout(3000);
   const later = await stats(page);
   check(later.reads === first.reads, `no further reads while nothing changes (${later.reads - first.reads} extra)`);
+  check(later.probes > first.probes, `meanwhile the detector alone checks for changed text (${later.probes - first.probes} checks)`);
   check(later.gate === "idle", `gate idle (${later.gate})`);
   check(later.busy / (Date.now() - t0) < 0.5, `busy ${(100 * later.busy / (Date.now() - t0)).toFixed(0)} % of the time`);
   const faded = await page.evaluate(() => document.querySelector("#overlay").classList.contains("faded"));

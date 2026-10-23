@@ -1,5 +1,5 @@
 // Module worker: loads onnxruntime-web and the OCR models, runs OCR on frames from app.js.
-import { runOCR } from "./ocr-core.js";
+import { fingerprint, runOCR } from "./ocr-core.js";
 
 // "file.js:line" of the first stack frame, so errors on a phone say where they came from.
 const where = (e) => (String(e?.stack ?? "").match(/([\w.-]+\.m?js):(\d+)/) ?? []).slice(1).join(":");
@@ -140,6 +140,8 @@ onmessage = async ({ data }) => {
         await toWasm(String(e?.message ?? e));
         res = await read();
       }
+      // Live reads, and the detector-only checks between them: what each box's text looks like.
+      if (data.prints) res.prints = res.boxes.map((b) => fingerprint(img, b));
       postMessage({ id, ...res });
     } else if (type === "cancel") {
       cancelBefore = id;
