@@ -404,7 +404,7 @@ async function webgpuScene() {
 }
 
 async function cartonScene() {
-  console.log("-- stacked headlines (photo): big labels, over the text when there's no gap");
+  console.log("-- stacked headlines (photo): readings keep their size, further onto the line when there's no gap");
   const { browser, page, errors } = await open(clips.static);
   await page.click('[data-lang="ja"]');
   await page.setInputFiles("#file", join(root, "test/images/carton.png"));
@@ -413,14 +413,14 @@ async function cartonScene() {
   console.log(`    ${s.lines} lines, labels: ${JSON.stringify(s.labels)}`);
   await shot(page, "carton-still");
   check(s.labels.lines === truth.carton.lines.length && s.labels.overlaps === 0, `every line labelled (${s.labels.lines}/${truth.carton.lines.length}), none overlapping`);
-  check(s.labels.bigShrink >= 0.75, `big lines keep at least 3/4 of their label size (${s.labels.bigShrink.toFixed(2)})`);
-  check(s.labels.over >= 1, "a big line with no room above or below gets its labels over its text");
+  check(s.labels.shrink >= 0.7, `rows keep most of their size (${s.labels.shrink.toFixed(2)})`);
+  check(s.labels.deepest > 1 / 3, `headlines with no gap between them get their readings further over their own text (${s.labels.deepest.toFixed(2)} of a line)`);
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
 
 async function stackScene() {
-  console.log("-- stacked title lines (photo): every line's readings readable, over the text when there's no gap");
+  console.log("-- stacked title lines (photo): every line's readings readable, on top of its own line");
   const { browser, page, errors } = await open(clips.static);
   await page.setInputFiles("#file", join(root, "test/images/subs_a.png"));
   await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads >= 1, null, 120000);
@@ -429,7 +429,8 @@ async function stackScene() {
   await shot(page, "stack");
   const lines = truth.subs_a.lines.length;
   check(s.lines === lines && s.hidden === 0 && s.crowded === 0 && s.overlaps === 0, `every line's readings are shown (${lines - s.hidden}/${lines}), none crowded or overlapping`);
-  check(s.over >= 1, "a line with no gap above or below gets its readings over its text");
+  // The block's last line may take the free space under it rather than cover its characters.
+  check(s.below <= 1 && s.deepest <= 0.34, `each row on top of its own line, covering at most a third of it (${s.deepest.toFixed(2)})`);
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -447,15 +448,17 @@ async function pageScene() {
   // The short last line may take the free space under it: nothing there to mistake it for.
   check(one.below <= 1, `rows sit above their own lines (${one.below} below)`);
   check(one.hidden === lines - 1, `at 1× only the heading's readings are big enough to show (${one.hidden} hidden)`);
-  // Pinch the paragraph to 4×: the same rows, now big enough to read.
+  // Pinch the paragraph to 4×: the same rows, now big enough to read, and over their own characters
+  // (at 1× the pinyin is wider than the characters, so labels push each other along).
   const { pinch } = await fingers(page);
   await pinch(195, 200, 60, 240);
   await until(page, () => self.cjkStats.zoom.still > 3.5);
   const four = await stats(page);
   console.log(`    ${four.zoom.still.toFixed(1)}×: ${JSON.stringify(four.labels)}`);
   await shot(page, "page-4x");
-  const same = ["lines", "labels", "crowded", "over", "below"].every((k) => four.labels[k] === one[k]);
+  const same = ["lines", "labels", "crowded", "below"].every((k) => four.labels[k] === one[k]);
   check(same && four.labels.hidden === 0, "zoomed in, every row is shown, with the same layout");
+  check(one.drift > 4 && four.labels.drift < 2, `and its labels line up over their characters (${one.drift.toFixed(1)} px off at 1×, ${four.labels.drift.toFixed(1)} px at 4×)`);
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -509,7 +512,7 @@ async function zoomScene() {
   const zs = await stats(page);
   console.log(`    still 1×: labels ${st.labels.min.toFixed(1)}–${st.labels.max.toFixed(1)} px · ${zs.zoom.still.toFixed(2)}×: ${zs.labels.min.toFixed(1)}–${zs.labels.max.toFixed(1)} px`);
   console.log(`    zoomed labels: ${JSON.stringify(zs.labels)}`);
-  const same = ["lines", "labels", "crowded", "over", "collisions"].every((k) => zs.labels[k] === st.labels[k]);
+  const same = ["lines", "labels", "crowded", "collisions"].every((k) => zs.labels[k] === st.labels[k]);
   check(same && Math.abs(zs.labels.max - st.labels.max * zs.zoom.still) < 0.5, "zooming the frozen frame scales its boxes and labels like a page, same layout");
   check(zs.reads === st.reads, "without reading it again");
   await shot(page, "zoom-still");

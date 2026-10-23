@@ -18,9 +18,11 @@ first visit.
     where telephoto lenses top out; the phone picks the lens.
   - Otherwise it uses digital zoom up to 3×. Digital zoom crops the middle of the frame and reads it
     at the camera's full resolution, so small text gets more pixels, not just a bigger picture.
-  - After the shutter (or on a photo): pinch and drag the frozen frame, up to 5×. It zooms like a
-    page: the same boxes and labels, just bigger, redrawn sharp, without reading it again or
-    rearranging.
+  - After the shutter (or on a photo): pinch and drag the frozen frame, up to 5×. The labels stay
+    where they are, redrawn sharp, without reading it again. Pinyin that already sits over its
+    characters grows with them. Pinyin that's wider than its characters (small print) keeps its size,
+    or grows until it's readable, while the characters spread out under it, until each syllable sits
+    over its own character, and from there grows with them.
   - Double-tap resets either.
 
 ## How it works
@@ -65,22 +67,22 @@ Live mode doesn't read every frame:
 Labels:
 
 - **Size:** each line gets one row of labels, sized from that line's own characters, so a big
-  headline gets big pinyin and small print gets small pinyin. The row font then shrinks until the
-  whole row fits the line (and the screen).
+  headline gets big pinyin and small print gets small pinyin. The row then shrinks until it fits
+  within the line's length: long syllables like "guāng" make the whole row smaller. A short word may
+  overhang each end by up to half a character to stay readable. If the pinyin can still be read
+  (6 px) at a size where every syllable fits over its own character, it uses that size.
+- **Style:** yellow letters outlined in black, with no backing, so the characters show through.
 - **Position:** each label sits as close as it can to its own characters. Labels are only pushed
   sideways as far as needed to stop them overlapping (a least-squares fit).
-- **Crowding:** the row goes above the line, or below if the space above is taken by other text or
-  another row, or shrinks to fit the gap. In a paragraph every row goes above its own line, so it's
-  clear which line it belongs to.
-  - **Text whose pinyin is readable at full size** keeps it readable: big text shrinks to 3/4 of
-    its size at most, the rest to 6 px. Tightly stacked lines (headlines, video titles) leave no gap
-    at all, so the row then goes over the line's own characters instead: outlined labels with no
-    backing, so the glyphs stay visible between the letters.
-  - **Fine print** (pinyin under 6 px even at full size) shrinks to fit the gap between lines, down
-    to 1/4 of its size, and only then goes on the side that covers least.
+- **On top of its line:** the row sits just above the line, or as far onto the tops of its
+  characters as it takes to clear other lines and rows: at most a third of the line at full size
+  (or down to 3/4 of it), then further, up to centred, for headlines with no gap between them, and
+  only then smaller. In a paragraph every row is on top of its own line, so it's clear which line
+  it belongs to. A row goes below its line instead when that's much roomier, or covers none of the
+  characters where above would (a calendar's lunar days).
 - **Too small to read:** pinyin under 6 px on screen fades out (it's gone below 4 px), and its line
-  gets a light yellow dashed outline instead: zoom in. Pinching a frozen frame brings it back as it grows, on the
-  same layout; in live mode, zooming the camera reads it again bigger. The list always has every
+  gets a light yellow dashed outline instead: zoom in. Pinching a frozen frame brings it back as it
+  grows; in live mode, zooming the camera reads it again bigger. The list always has every
   reading.
 - **Freeze:** after the shutter, the live labels stay up while the frame is re-read at higher
   resolution, then every line gets its readings, small ones included.
@@ -215,9 +217,12 @@ padding.
   read Hangul, and kanji-only text can't tell Chinese from Japanese.
 - **ー vs 一:** the recognizer sometimes reads 一 (one) as ー (long-vowel mark). `reading.js` fixes
   that from the surrounding characters.
-- **Dense small text:** a paragraph of small print leaves only a thin gap between its lines, so its
-  pinyin is tiny: the lines are outlined with dashes until you zoom in (pinch a frozen frame, or
-  zoom the camera). The list (after the shutter) always shows every line in full.
+- **Dense small text:** a paragraph of small print gets pinyin too small to read, so its lines are
+  outlined with dashes until you zoom in (pinch a frozen frame, or zoom the camera). Until then the
+  pinyin is wider than its characters, so the labels don't sit over their own characters; zoomed in
+  far enough, they do. The list (after the shutter) always shows every line in full.
+- **Headlines with no gap between them** get their pinyin over the upper part of their own
+  characters, outlined so the characters still show through.
 - **Digital zoom** gets visibly soft past about 2×. The text is still read at the camera's full
   resolution, but there are only so many camera pixels in a third of the frame.
 

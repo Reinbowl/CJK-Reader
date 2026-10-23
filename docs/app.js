@@ -18,12 +18,10 @@ const LIVE_DET = Number(params.get("det")) || 640; // detector input, longest si
 const STILL_DET = 960;
 const LIVE_MAX = 1280, STILL_MAX = 1920; // captured image, longest side (recogniser crops come from this)
 const MODEL = { zh: "zhja", ja: "zhja", ko: "ko" };
-// Labels: LABEL_SCALE × the line's thickness, at most MAX_LABEL px, shrunk to fit. A row fades in
-// between FADE_FROM and LEGIBLE px on screen (pinching a frozen frame enlarges it); until it's fully
-// shown, its line's box is dashed: zoom in. Live mode doesn't recognise lines thinner than MIN_LINE
-// px on screen (dev panel: 10/14/20).
+// Labels: LABEL_SCALE × the line's thickness, at most MAX_LABEL px, shrunk to fit the line. A row fades
+// in between FADE_FROM and LEGIBLE px on screen; until it's fully shown, its line's box is dashed:
+// zoom in. Live mode doesn't recognise lines thinner than MIN_LINE px on screen (dev panel: 10/14/20).
 const LABEL_SCALE = 0.45, MAX_LABEL = 28, FADE_FROM = 4, LEGIBLE = 6;
-const OVERLAY_MIN = 14; // px: rows this big go over their own text rather than shrink below 3/4
 const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
@@ -419,23 +417,34 @@ function overlapArea(p, q) {
   return Math.max(0, w) * Math.max(0, h);
 }
 
-// Each horizontal line gets one row of labels, its font scaled to that line (big text, big labels)
-// and shrunk until the row fits the line's length; labels are then spread so none overlap. The row
-// goes above the line, or below if that is clear of other lines and rows, or shrinks to fit the
-// gap. Labels readable at full size stay readable: big text shrinks to 3/4 at most, the rest to
-// LEGIBLE, and then the row goes over its own characters (tightly stacked lines leave no gap, and
-// the glyphs show through outlined labels). Fine print shrinks to 1/4 (a dense paragraph's rows fit
-// its thin gaps, readable once zoomed in) and then goes on the side that covers least. Vertical
-// lines get their labels to the right of each character, like furigana.
-// layout() works out where everything goes, at 1× (the screen mapping `map`), as a plan; paint()
-// draws a plan through a transform. A frozen frame keeps its plan and repaints it on every frame of a
-// pinch or drag, so zooming enlarges boxes and labels like a page, without rearranging them.
+// Label centres along a line for a row at `size`: as close to their characters (t) as they go without
+// overlapping, then slid back within the line's length (len) where they run past an end (a row
+// longer than the line is centred on it).
+function rowX(t, w100, size, len) {
+  const w = w100.map((v) => (v * size) / 100), x = spread(t, w, LABEL_GAP * size);
+  let lo = x[0] - w[0] / 2 - 4, hi = x.at(-1) + w.at(-1) / 2 + 4;
+  const half = Math.max(len / 2 + 4, (hi - lo) / 2), d = lo < -half ? -half - lo : hi > half ? half - hi : 0;
+  return { w, x: x.map((v) => v + d), lo: lo + d, hi: hi + d };
+}
+
+// Each horizontal line gets one row of labels on top of it (or under it), outlined, sized to the line:
+// LABEL_SCALE × its thickness, shrunk until the row fits the line's length (a short word may overhang
+// by up to half a character each end to stay readable), and further, while it stays readable, until
+// every label sits over its own characters (`aligned`). The row goes just outside the line, or as far
+// onto the tops of its characters as it takes to clear other lines and rows: at full size (or down to
+// 3/4 of it) covering at most a third of the line, else at full size up to centred on it, else
+// smaller. Above wins, unless below is much bigger, only below is readable, or below covers clearly
+// less of the line. Vertical lines get their labels to the right of each character, like furigana.
+// layout() works out where the rows go, at 1× (the screen mapping `map`), as a plan; paint() draws a
+// plan through a transform. Zooming a frozen frame repaints its plan on every frame: the rows stay put,
+// but each row's size is worked out for the zoom (see paint()), so the layout is never redone.
 function layout(result, map) {
   const P = (x, y) => [map.ox + x * map.s, map.oy + y * map.s];
   const texts = result.lines.map((line) => line.box.map(([x, y]) => P(x, y)));
   const plan = { skipped: result.skipped.map((box) => box.map(([x, y]) => P(x, y))), boxes: texts, groups: [] };
   const rows = []; // label rows placed so far (screen polygons)
-  const drawn = (plan.stats = { lines: 0, labels: 0, crowded: 0, over: 0, below: 0, overlaps: 0, collisions: 0, min: Infinity, max: 0, bigShrink: 1 });
+  // shrink: smallest row size / its size before placing; deepest: most of a line a row covers.
+  const drawn = (plan.stats = { lines: 0, labels: 0, crowded: 0, below: 0, overlaps: 0, collisions: 0, shrink: 1, deepest: 0 });
   const vw = view.clientWidth, vh = view.clientHeight;
   // Biggest text first: its row is the hardest to place. Lines within 15 % of the same size go top to
   // bottom, so in a paragraph each row takes the space above its own line.
@@ -463,96 +472,103 @@ function layout(result, map) {
     octx.font = font(100);
     const w100 = labels.map((l) => octx.measureText(l.text).width);
     const centres = labels.map((l) => P(l.cs.reduce((a, c) => a + c.x, 0) / l.cs.length, l.cs.reduce((a, c) => a + c.y, 0) / l.cs.length));
+    const texts1 = labels.map((l) => l.text);
     drawn.lines++;
+    drawn.labels += labels.length;
 
     if (line.vertical) {
-      const size = base;
       plan.groups.push({
-        line: k, size, over: false,
-        rects: labels.map((l, i) => {
-          const w = (w100[i] * size) / 100 + 6;
-          return { cx: centres[i][0] + thick / 2 + 1 + w / 2, cy: centres[i][1], angle: 0, w, h: size * 1.3 };
-        }),
-        items: labels.map((l, i) => ({ text: l.text, x: centres[i][0] + thick / 2 + 4, y: centres[i][1], angle: 0, align: "left" })),
+        line: k, size: base, aligned: Infinity, texts: texts1,
+        items: centres.map(([x, y]) => ({ x: x + thick / 2 + 4, y, angle: 0, align: "left" })),
       });
-      Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, size), max: Math.max(drawn.max, size) });
       continue;
     }
 
-    // Row font: the line's own size, shrunk so all labels fit along the line (plus half a thickness
-    // at each end) and across the screen.
     const [cx, cy] = P((line.box[0][0] + line.box[2][0]) / 2, (line.box[0][1] + line.box[2][1]) / 2);
     const t = centres.map(([x, y]) => (x - cx) * an[0] + (y - cy) * an[1]);
     const need = w100.reduce((a, b) => a + b, 0) / 100 + LABEL_GAP * (labels.length - 1);
-    const fit = Math.min(base, Math.min(len + thick, vw - 8) / need);
-    const place = (size, side) => {
-      const w = w100.map((v) => (v * size) / 100);
-      let x = spread(t, w, LABEL_GAP * size);
-      let lo = Math.min(...x.map((xi, i) => xi - w[i] / 2)) - 4, hi = Math.max(...x.map((xi, i) => xi + w[i] / 2)) + 4;
-      // Keep the row on screen when the line runs off an edge but is mostly on screen (rows of
-      // near-horizontal lines only).
-      if (Math.abs(an[0]) > 0.7 && cx >= 0 && cx <= vw) {
-        const sx0 = cx + an[0] * (an[0] > 0 ? lo : hi), sx1 = cx + an[0] * (an[0] > 0 ? hi : lo);
-        const d = (sx0 < 2 ? 2 - sx0 : sx1 > vw - 2 ? vw - 2 - sx1 : 0) / an[0];
-        x = x.map((xi) => xi + d);
-        lo += d;
-        hi += d;
-      }
-      const off = side * (thick / 2 + size * 0.75); // along bn: negative is above the line
+    // The biggest size at which no label has to move off its own characters: each pair of
+    // neighbouring centres far enough apart for half of each label and the gap.
+    let aligned = Infinity;
+    for (let i = 1; i < labels.length; i++) aligned = Math.min(aligned, (t[i] - t[i - 1]) / ((w100[i - 1] + w100[i]) / 200 + LABEL_GAP));
+    const fit = Math.min(base, Math.max(len / need, Math.min(LEGIBLE, (len + thick) / need)));
+    const size0 = aligned >= LEGIBLE ? Math.min(fit, aligned) : fit; // lined up, if that's still readable
+    // Rows of near-horizontal lines that run off an edge but are mostly on screen stay on screen.
+    const onScreen = (lo, hi) => {
+      if (Math.abs(an[0]) <= 0.7 || cx < 0 || cx > vw) return 0;
+      const sx0 = cx + an[0] * (an[0] > 0 ? lo : hi), sx1 = cx + an[0] * (an[0] > 0 ? hi : lo);
+      return (sx0 < 2 ? 2 - sx0 : sx1 > vw - 2 ? vw - 2 - sx1 : 0) / an[0];
+    };
+    // push: how far the row goes onto its own line (0: just outside it; thick / 2 + 0.75 size: centred).
+    const place = (size, side, push = 0) => {
+      const r = rowX(t, w100, size, len), shift = onScreen(r.lo, r.hi);
+      const lo = r.lo + shift, hi = r.hi + shift, x = r.x.map((v) => v + shift);
+      const off = side * (thick / 2 + size * 0.75 - push); // along bn: negative is above the line
       const at = (u, v) => [cx + an[0] * u + bn[0] * (off + v), cy + an[1] * u + bn[1] * (off + v)];
       const poly = [at(lo, -size * 0.7), at(hi, -size * 0.7), at(hi, size * 0.7), at(lo, size * 0.7)];
       const others = texts.filter((_, j) => j !== k);
       const clear = !others.some((b) => overlaps(poly, b)) && !rows.some((r) => overlaps(poly, r));
       // Covering text is worse than covering another row of labels.
       const cost = () => others.reduce((a, b) => a + 2 * overlapArea(poly, b), 0) + rows.reduce((a, r) => a + overlapArea(poly, r), 0);
-      return { size, side, w, x, lo, hi, at, poly, clear, cost };
+      return { size, side, push, shift, w: r.w, x, at, off, poly, clear, cost };
     };
-    const big = fit >= OVERLAY_MIN, readable = fit >= LEGIBLE;
-    const floor = big ? fit * 0.75 : readable ? LEGIBLE : fit * 0.25;
-    // Each side's biggest clear row, shrinking from fit to floor. Above wins unless below is bigger;
-    // for small text, unless it's much bigger: in a paragraph, a fraction of a pixel of difference
-    // between the gaps mustn't flip rows to the other side, where they'd look like the next line's.
+    const floor = size0 * 0.25, centred = (size) => thick / 2 + 0.75 * size;
     const largest = (side) => {
-      for (let size = fit; size >= floor; size = size > floor && size * 0.85 < floor ? floor : size * 0.85) {
-        const r = place(size, side);
-        if (r.clear) return r;
-      }
-      return null;
+      const tries = (sizes, most) => {
+        for (const size of sizes) {
+          for (const f of [0, 0.25, 0.5, 0.75, 1]) {
+            const r = place(size, side, f * most(size));
+            if (r.clear) return r;
+          }
+        }
+        return null;
+      };
+      const smaller = [];
+      for (let size = size0 * 0.85 ** 3; size >= floor; size *= 0.85) smaller.push(size);
+      return tries([size0, size0 * 0.85, size0 * 0.72], () => thick / 3) ?? tries([size0], centred) ?? tries(smaller, centred);
     };
     const up = largest(-1), down = largest(1);
-    let row = up && !(down && down.size * (big ? 1 : 0.7) > up.size) ? up : down;
-    if (!row && readable) {
-      // Centred on the line itself, if that doesn't land on another row; else the least bad spot.
-      const over = { ...place(fit, 0), over: true };
-      row = rows.some((r) => overlaps(over.poly, r)) ? [over, place(floor, -1), place(floor, 1)].sort((a, b) => a.cost() - b.cost())[0] : over;
-      if (row.over) drawn.over++;
-      else drawn.crowded++;
-    }
+    const better = (b, a) => !!b && (!a || b.size * 0.7 > a.size || (b.size >= LEGIBLE && a.size < LEGIBLE) ||
+      (b.size >= a.size * 0.85 && (b.push < a.push - thick * 0.25 || (!b.push && a.push > 0))));
+    let row = better(down, up) ? down : up;
     if (!row) {
       row = [place(floor, -1), place(floor, 1)].sort((a, b) => a.cost() - b.cost())[0];
       drawn.crowded++;
     }
-    if (big) drawn.bigShrink = Math.min(drawn.bigShrink, row.size / fit);
     if (row.side > 0) drawn.below++;
     if (rows.some((r) => overlaps(row.poly, r))) drawn.collisions++;
     rows.push(row.poly);
+    drawn.shrink = Math.min(drawn.shrink, row.size / size0);
+    drawn.deepest = Math.max(drawn.deepest, Math.max(0, row.push - 0.05 * row.size) / thick);
+    for (let i = 1; i < labels.length; i++) if (row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;
 
-    const angle = Math.atan2(an[1], an[0]);
-    const [bx, by] = row.at((row.lo + row.hi) / 2, 0);
     plan.groups.push({
-      line: k,
-      size: row.size,
-      over: !!row.over, // over the text: no backing, so the characters show between the letters; outlined labels instead
-      rects: row.over ? [] : [{ cx: bx, cy: by, angle, w: row.hi - row.lo, h: row.size * 1.4 }],
-      items: labels.map((l, i) => {
-        const [x, y] = row.at(row.x[i], 0);
-        return { text: l.text, x, y, angle, align: "center" };
+      line: k, size: row.size, aligned, texts: texts1, angle: Math.atan2(an[1], an[0]),
+      // To lay the row out again at another size: its characters, its line, and its inner edge (the
+      // side towards its line), which stays put.
+      t, w100, len, cx, cy, an, bn, side: row.side, shift: row.shift, inner: row.off - row.side * 0.7 * row.size,
+      items: row.x.map((u) => {
+        const [x, y] = row.at(u, 0);
+        return { x, y, angle: Math.atan2(an[1], an[0]), align: "center" };
       }),
     });
-    for (let i = 1; i < labels.length; i++) if (row.x[i] - row.x[i - 1] < (row.w[i] + row.w[i - 1]) / 2 - 0.5) drawn.overlaps++;
-    Object.assign(drawn, { labels: drawn.labels + labels.length, min: Math.min(drawn.min, row.size), max: Math.max(drawn.max, row.size) });
   }
   return plan;
+}
+
+// A row's size on screen at zoom s. One whose labels already sit over their own characters grows
+// with the page. Otherwise it keeps its size (or grows to LEGIBLE) while the characters spread out
+// under it, until its labels fit over them (aligned × s), and from there grows with them.
+const rowSize = (g, s) => Math.min(g.size * s, Math.max(g.size, LEGIBLE, g.aligned * s));
+
+// The labels of row g at layout size `size`: as laid out, or spread again for a smaller size.
+function rowItems(g, size) {
+  if (size >= g.size - 1e-6 || !g.t) return g.items;
+  const { x } = rowX(g.t, g.w100, size, g.len), off = g.inner + g.side * 0.7 * size;
+  return x.map((u) => {
+    u += g.shift;
+    return { x: g.cx + g.an[0] * u + g.bn[0] * off, y: g.cy + g.an[1] * u + g.bn[1] * off, angle: g.angle, align: "center" };
+  });
 }
 
 function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
@@ -565,8 +581,9 @@ function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
     octx.stroke();
   };
   // How much of a row shows at this zoom: none below FADE_FROM px on screen, all of it from LEGIBLE.
-  const shown = (g) => Math.min(1, Math.max(0, (g.size * scale.s - FADE_FROM) / (LEGIBLE - FADE_FROM)));
-  const small = new Set(plan.groups.filter((g) => shown(g) < 1).map((g) => g.line));
+  const sizes = plan.groups.map((g) => rowSize(g, scale.s));
+  const shown = (i) => Math.min(1, Math.max(0, (sizes[i] - FADE_FROM) / (LEGIBLE - FADE_FROM)));
+  const small = new Set(plan.groups.filter((g, i) => shown(i) < 1).map((g) => g.line));
   // Lines too small to read (live mode skips them) or to label at this zoom: a light yellow dashed
   // hint to move closer or zoom in. Outlines stay as thin on screen at any zoom.
   octx.setLineDash([4 / scale.s, 4 / scale.s]);
@@ -578,35 +595,31 @@ function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
   octx.lineWidth = 1.5 / scale.s;
   octx.strokeStyle = "rgba(255,255,255,0.75)";
   plan.boxes.forEach((b, k) => small.has(k) || outline(b));
+  // Yellow labels outlined in black, no backing: the characters show between the letters.
   octx.textBaseline = "middle";
   octx.lineJoin = "round";
-  for (const g of plan.groups) {
-    if (!(octx.globalAlpha = shown(g))) continue;
-    octx.fillStyle = "rgba(0,0,0,0.6)";
-    for (const r of g.rects) {
-      octx.save();
-      octx.translate(r.cx, r.cy);
-      octx.rotate(r.angle);
-      octx.fillRect(-r.w / 2, -r.h / 2, r.w, r.h);
-      octx.restore();
-    }
-    octx.font = font(g.size);
-    octx.fillStyle = "#ffe066";
-    octx.strokeStyle = "rgba(0,0,0,0.85)";
-    octx.lineWidth = Math.max(2, g.size * 0.16);
-    for (const t of g.items) {
+  octx.fillStyle = "#ffe066";
+  octx.strokeStyle = "rgba(0,0,0,0.85)";
+  let drift = 0; // furthest a label sits from its own characters, on screen px
+  plan.groups.forEach((g, i) => {
+    if (!(octx.globalAlpha = shown(i))) return;
+    const size = sizes[i] / scale.s, items = rowItems(g, size);
+    octx.font = font(size);
+    octx.lineWidth = Math.max(2, sizes[i] * 0.16) / scale.s;
+    items.forEach((t, j) => {
       octx.save();
       octx.translate(t.x, t.y);
       octx.rotate(t.angle);
       octx.textAlign = t.align;
-      if (g.over) octx.strokeText(t.text, 0, 0);
-      octx.fillText(t.text, 0, 0);
+      octx.strokeText(g.texts[j], 0, 0);
+      octx.fillText(g.texts[j], 0, 0);
       octx.restore();
-    }
-  }
+      if (g.t) drift = Math.max(drift, Math.abs((t.x - g.cx) * g.an[0] + (t.y - g.cy) * g.an[1] - g.t[j]) * scale.s);
+    });
+  });
   octx.globalAlpha = 1;
-  // hidden: rows not fully shown at this zoom.
-  stats.labels = { ...plan.stats, hidden: small.size, min: plan.stats.min * scale.s, max: plan.stats.max * scale.s }; // on-screen px
+  // On screen px; hidden: rows not fully shown at this zoom.
+  stats.labels = { ...plan.stats, hidden: small.size, drift, min: Math.min(...sizes), max: Math.max(0, ...sizes) };
 }
 
 // The live overlay: laid out and painted at once. The plan is kept for the shutter, which shows these
