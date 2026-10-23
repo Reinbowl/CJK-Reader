@@ -188,17 +188,19 @@ async function read(image, detLimit, minLineH = 0) {
 // "Same scene" is judged against the noise seen while steady: big sharp text leaves more residue
 // after a sub-pixel shift than a soft scene, and the tolerance grows with it.
 // Zoomed in, the same hand shake moves the picture further, so the thumbnail gets coarser in step
-// (THUMB_W / zoom px wide, the shift search with it): all the thresholds then stand for the same
-// movement of the phone at any zoom.
-const GATE_MS = 100, THUMB_W = 40, SEARCH = 6, SETTLE = 2;
-const FAST_PX = 2, STEADY_PX = 0.8, CHANGE_PX = 3; // thumbnail px (per sample for the first two)
+// (THUMB_W / zoom px wide), and the thresholds are in px of the 1× thumbnail: they stand for the
+// same movement of the phone at any zoom. Past 2.5× the thumbnail stops at MIN_THUMB px and its
+// shifts are scaled by `u` instead. The shift search reaches SEARCH px of that movement, but at
+// most a quarter of the thumbnail: zoomed in, a small movement is a big part of the view.
+const GATE_MS = 100, THUMB_W = 40, MIN_THUMB = 16, SEARCH = 6, SETTLE = 2;
+const FAST_PX = 2, STEADY_PX = 0.8, CHANGE_PX = 3; // 1× thumbnail px (per sample for the first two)
 const thumbCanvas = document.createElement("canvas");
 const thumbCtx = thumbCanvas.getContext("2d", { willReadFrequently: true });
 const gate = { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null, timer: 0 };
 
 function thumbnail() {
   const { sx, sy, sw, sh } = visibleRect(video.videoWidth, video.videoHeight, "cover", dzoom);
-  const w = Math.max(16, Math.round(THUMB_W / zoom)), h = Math.max(16, Math.round((w * sh) / sw));
+  const w = Math.max(MIN_THUMB, Math.round(THUMB_W / zoom)), h = Math.max(16, Math.round((w * sh) / sw));
   // Draw at 4× and box-filter down: shrinking 1080p straight to 36 px aliases into fake motion.
   thumbCanvas.width = w * 4;
   thumbCanvas.height = h * 4;
@@ -212,14 +214,18 @@ function thumbnail() {
   const mean = g.reduce((a, v) => a + v, 0) / g.length;
   const sd = Math.max(6, Math.sqrt(g.reduce((a, v) => a + (v - mean) ** 2, 0) / g.length)); // floor: a blank wall is noise
   for (let i = 0; i < g.length; i++) g[i] = (g[i] - mean) / sd;
-  return { g, w, h };
+  return { g, w, h, u: THUMB_W / (w * zoom) }; // u: 1× thumbnail px per px of this one
 }
 
-// Shift (dx, dy) of b's content against a, within ±SEARCH px and refined to sub-pixel by a parabola
-// fit, plus the mean abs difference left at that shift.
+const reach = (t) => Math.min(t.w >> 2, Math.max(2, Math.round(SEARCH / t.u))); // shift search, ±px
+
+// Shift (dx, dy) of b's content against a (px of these thumbnails), within ±reach and refined to
+// sub-pixel by a parabola fit, plus the mean abs difference left at that shift. The difference is
+// taken at the sub-pixel shift (b sampled bilinearly): at the nearest whole pixel, a half-pixel
+// offset of big text on a coarse thumbnail leaves as much as a changed scene would.
 function compare(a, b) {
-  if (!a || !b || a.w !== b.w || a.h !== b.h) return null;
-  const { w, h } = a, R = Math.max(2, Math.round((SEARCH * w) / THUMB_W)), n = 2 * R + 1;
+  if (!a || !b || a.w !== b.w || a.h !== b.h || a.u !== b.u) return null;
+  const { w, h } = a, R = reach(a), n = 2 * R + 1;
   const cost = new Float32Array(n * n);
   let best = 0;
   for (let dy = -R; dy <= R; dy++) {
@@ -235,7 +241,17 @@ function compare(a, b) {
   const vertex = (m, c, p) => (m - p) / (2 * (m - 2 * c + p) || 1);
   const fx = bx > 0 && bx < n - 1 ? vertex(cost[best - 1], cost[best], cost[best + 1]) : 0;
   const fy = by > 0 && by < n - 1 ? vertex(cost[best - n], cost[best], cost[best + n]) : 0;
-  return { dx: bx - R + fx, dy: by - R + fy, err: cost[best] };
+  const dx = bx - R + fx, dy = by - R + fy, ix = Math.floor(dx), iy = Math.floor(dy), tx = dx - ix, ty = dy - iy;
+  const at = (x, y) => b.g[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  let s = 0;
+  for (let y = R; y < h - R; y++) {
+    for (let x = R; x < w - R; x++) {
+      const x0 = x + ix, y0 = y + iy;
+      const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx, bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
+      s += Math.abs(top + (bot - top) * ty - a.g[y * w + x]);
+    }
+  }
+  return { dx, dy, err: s / ((w - 2 * R) * (h - 2 * R)) };
 }
 
 function sample() {
@@ -244,14 +260,15 @@ function sample() {
   const m = (gate.motion = compare(gate.prev, cur));
   gate.prev = cur;
   const same = (c) => c && c.err < 2 * gate.noise + 0.1;
-  const speed = m ? Math.hypot(m.dx, m.dy) : Infinity;
+  const dist = (c) => Math.hypot(c.dx, c.dy) * cur.u; // 1× thumbnail px
+  const speed = m ? dist(m) : Infinity;
   const fast = (gate.fast = !same(m) || speed > FAST_PX);
   const steady = !fast && speed < STEADY_PX;
   if (steady) gate.noise = Math.min(0.3, Math.max(0.03, gate.noise + 0.2 * (m.err - gate.noise)));
   gate.still = steady ? gate.still + 1 : 0;
   const d = (gate.drift = compare(gate.read, cur));
   const keep = same(d); // still the scene the overlay was read from, maybe shifted
-  gate.state = gate.still < SETTLE ? "moving" : !keep || Math.hypot(d.dx, d.dy) > CHANGE_PX ? "ready" : "idle";
+  gate.state = gate.still < SETTLE ? "moving" : !keep || dist(d) > CHANGE_PX ? "ready" : "idle";
   const show = !fast && keep;
   overlay.classList.toggle("faded", !show);
   if (show) {
@@ -570,11 +587,12 @@ function debugReadout() {
     document.body.append(probe);
   }
   const s = getComputedStyle(probe);
-  const f = (c) => (c ? `${c.dx.toFixed(2)},${c.dy.toFixed(2)} e${c.err.toFixed(2)}` : "-");
+  const t = gate.prev, u = t?.u ?? 1; // shifts in 1× thumbnail px, like the thresholds
+  const f = (c) => (c ? `${(c.dx * u).toFixed(2)},${(c.dy * u).toFixed(2)} e${c.err.toFixed(2)}` : "-");
   $("#debug").textContent = [
     `gate ${gate.state}${gate.fast ? " fast" : ""} still ${gate.still} noise ${gate.noise.toFixed(2)} motion ${f(gate.motion)} drift ${f(gate.drift)}`,
     `reads ${stats.reads} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
-    `zoom ${zoom.toFixed(2)}× (${hwZoom ? `camera ${hwZoom.min}–${hwZoom.max}×, digital ${dzoom.toFixed(2)}×` : "digital"})${mode === "still" ? ` · still ${sv.s.toFixed(2)}×` : ""}`,
+    `zoom ${zoom.toFixed(2)}× (${hwZoom ? `camera ${hwZoom.min}–${hwZoom.max}×, digital ${dzoom.toFixed(2)}×` : "digital"})${t ? ` · thumb ${t.w}px ±${reach(t)} u${u.toFixed(2)}` : ""}${mode === "still" ? ` · still ${sv.s.toFixed(2)}×` : ""}`,
     `inner ${innerWidth}×${innerHeight} screen ${screen.width}×${screen.height} vv ${visualViewport?.height.toFixed(0)} view ${view.clientHeight}`,
     `safe ${[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(parseFloat).join("/")} standalone ${navigator.standalone ?? matchMedia("(display-mode: standalone)").matches}`,
     ...(stats.backend.fallback ? [stats.backend.fallback] : []),

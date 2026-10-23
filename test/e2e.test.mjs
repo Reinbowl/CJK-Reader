@@ -88,6 +88,8 @@ const clips = {
   calendar: writeY4M("calendar", [frame(image("calendar"), 0, 490)]),
   pan: writeY4M("pan", pan), // 1.3 s still, 0.5 s fast pan right, 2 s still, then a jump back
   tremor: writeY4M("tremor", Array.from({ length: 45 }, () => frame(zh, jitter(), 1100, jitter()))), // big text, shaky hand
+  // A hand slowly wandering ±17 px across and ±4 px up and down, one loop every 3 s.
+  wander: writeY4M("wander", Array.from({ length: 45 }, (_, k) => frame(zh, Math.round(17 * Math.sin((2 * Math.PI * k) / 45)), 1100, Math.round(4 * Math.sin((4 * Math.PI * k) / 45))))),
 };
 
 // CJK fonts for the screenshots, if tools/make_test_images.py's Noto font is in .cache/fonts.
@@ -146,6 +148,9 @@ async function open(clip, query = "", extraArgs = []) {
 const stats = (page) => page.evaluate(() => structuredClone(self.cjkStats));
 const until = (page, fn, arg, timeout = 60000) => page.waitForFunction(fn, arg, { timeout, polling: 50 });
 const shot = (page, name) => page.screenshot({ path: join(out, `${name}.png`) });
+
+// The zoom slider, as if dragged to z.
+const setSlider = (page, z) => page.$eval("#zoom", (el, z) => { el.value = String(z); el.dispatchEvent(new Event("input", { bubbles: true })); }, z);
 
 async function startLive(page) {
   await page.click("#go");
@@ -302,15 +307,35 @@ async function tremorScene() {
   await shot(page, "tremor-live");
   check(shown >= 0.8, "labels stay up through the tremor");
   check(reads <= 2, "tremor doesn't trigger re-reads");
-  // Zoomed in 2×, the same shake moves the picture twice as far; the gate should take that in its stride.
+  // Zoomed in, the same shake moves the picture further; the gate should take that in its stride.
+  // 3× is past the 2.5× where the gate's thumbnail stops shrinking.
+  for (const z of [2, 3]) {
+    const before = await stats(page);
+    await setSlider(page, z);
+    await until(page, (n) => self.cjkStats.reads > n, before.reads);
+    const zlog = await watch(page, 5000);
+    const zreads = zlog.at(-1).reads - zlog[0].reads, zshown = zlog.filter((e) => !e.faded).length / zlog.length;
+    const zmoving = zlog.filter((e) => e.gate === "moving").length / zlog.length;
+    console.log(`    at ${z}×: ${zreads} re-reads in 5 s, labels shown ${(100 * zshown).toFixed(0)} %, "moving" ${(100 * zmoving).toFixed(0)} % of the time`);
+    check(zshown >= 0.8 && zreads <= 2 && zmoving <= moving + 0.15, `zoomed in ${z}×, the same tremor is judged as at 1×`);
+  }
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function wanderScene() {
+  console.log("-- slow wander at 3×: labels follow the drift, few re-reads");
+  const { browser, page, errors } = await open(clips.wander);
+  await startLive(page);
   const before = await stats(page);
-  await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await setSlider(page, 3);
   await until(page, (n) => self.cjkStats.reads > n, before.reads);
-  const zlog = await watch(page, 5000);
-  const zreads = zlog.at(-1).reads - zlog[0].reads, zshown = zlog.filter((e) => !e.faded).length / zlog.length;
-  const zmoving = zlog.filter((e) => e.gate === "moving").length / zlog.length;
-  console.log(`    at 2×: ${zreads} re-reads in 5 s, labels shown ${(100 * zshown).toFixed(0)} %, "moving" ${(100 * zmoving).toFixed(0)} % of the time`);
-  check(zshown >= 0.8 && zreads <= 2 && zmoving <= moving + 0.15, "zoomed in 2×, the same tremor is judged as at 1×");
+  // At 3× the wander moves the text ±40 px across the screen: up to 80 px from where it was read.
+  const log = await watch(page, 6000);
+  const reads = log.at(-1).reads - log[0].reads, shown = log.filter((e) => !e.faded).length / log.length;
+  console.log(`    ${reads} re-reads in 6 s, labels shown ${(100 * shown).toFixed(0)} %`);
+  await shot(page, "wander-3x");
+  check(shown >= 0.8 && reads <= 2, "at 3× the labels follow a slow wander without re-reading");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -372,7 +397,7 @@ async function zoomScene() {
 
   const barActive = () => page.evaluate(() => document.querySelector("#zoombar").classList.contains("active"));
   check(!(await barActive()), "the zoom slider rests as a line");
-  await page.$eval("#zoom", (el) => { el.value = "2"; el.dispatchEvent(new Event("input", { bubbles: true })); });
+  await setSlider(page, 2);
   check(await barActive(), "touching it shows it in full");
   await until(page, (n) => self.cjkStats.reads > n && self.cjkStats.gate === "idle", one.reads);
   const two = await stats(page);
@@ -450,7 +475,7 @@ async function downloadScene() {
 }
 
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

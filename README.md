@@ -43,8 +43,11 @@ Live mode doesn't read every frame:
     changed since the last read.
   - What counts as "the same scene" adapts to how much the image jitters while steady. Big, sharp
     text close to the camera jitters more than a distant sign.
-  - The thresholds scale with zoom. At 3× the same hand shake moves the picture three times as far,
-    so the gate looks at a three times coarser thumbnail.
+  - The thresholds scale with zoom. At 2× the same hand shake moves the picture twice as far, so
+    the gate looks at a twice as coarse thumbnail. From 2.5× the thumbnail stays 16 px wide and the
+    movement it measures is scaled down instead, so 5× allows as much hand movement as 1×.
+  - Zoomed in, the labels follow the text for up to a quarter of the screen (about 100 px at 5×)
+    before the view counts as new and is read again.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
   the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
   switches to WASM until the next launch, and the status bar says so.
