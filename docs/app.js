@@ -579,10 +579,13 @@ function fillSheet(result) {
         text.append(ruby);
       }
     }
+    li.append(text);
+    // Japanese: romaji under the kana furigana. Elsewhere it would repeat the ruby.
+    if (result.lang !== "ja") return li;
     const roman = document.createElement("div");
     roman.className = "roman";
     roman.textContent = note.roman;
-    li.append(text, roman);
+    li.append(roman);
     return li;
   }));
   if (!result.notes.length) linesEl.innerHTML = "<li class=empty>No text found. Try moving closer or holding steady.</li>";

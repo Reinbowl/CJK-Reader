@@ -219,6 +219,8 @@ async function staticScene() {
   await shot(page, "static-still");
   await page.tap("#list");
   check(!(await sheetHidden()), "list button opens the list");
+  const roman = await page.evaluate(() => document.querySelectorAll("#lines .roman").length);
+  check(roman === 0, "the Chinese list shows pinyin only as ruby, not again underneath");
   await shot(page, "static-still-list");
   await page.tap("#sheet");
   check(await sheetHidden(), "tapping the list closes it");

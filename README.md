@@ -8,7 +8,8 @@ first visit.
 - **Live:** readings float above each line of text in the camera view. It reads when the camera
   is held steady on something new, and rests while nothing changes.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
-  it. The list button shows every line with ruby text.
+  it. The list button shows every line with ruby text, one item per line of text in the picture,
+  and for Japanese the romaji under each line.
 - **Photo:** reads a picture from the library instead of the camera.
 - **Zoom:**
   - Live mode: pinch, or use the slider above the shutter. At rest the slider is just a thin line;

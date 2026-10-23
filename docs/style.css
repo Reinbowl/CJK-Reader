@@ -73,7 +73,8 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 #lines li:last-child { border-bottom: 0; }
 #lines .empty { color: var(--muted); }
 .ruby { font-size: 24px; line-height: 2.1; word-break: break-all; }
-.ruby rt { font-size: 12px; color: var(--accent); letter-spacing: 0; }
+/* Padding: syllables wider than their character (chuàng) would otherwise run into the next one. */
+.ruby rt { font-size: 12px; color: var(--accent); letter-spacing: 0; padding: 0 .15em; }
 .roman { color: var(--muted); font-size: 14px; }
 
 #start { position: fixed; z-index: 1; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
