@@ -56,6 +56,12 @@ function frame(png, dx = 0, fitW = W, dy = 0) {
   return rgb;
 }
 
+// A frame with a dim disc of radius r at (cx, cy).
+function spot(rgb, cx, cy, r) {
+  for (let y = cy - r; y < cy + r; y++) for (let x = cx - r; x < cx + r; x++) if ((x - cx) ** 2 + (y - cy) ** 2 < r * r) rgb.set([90, 80, 150], (y * W + x) * 3);
+  return rgb;
+}
+
 function writeY4M(name, frames) {
   const path = join(out, `${name}.y4m`);
   const fd = openSync(path, "w");
@@ -88,6 +94,9 @@ const clips = {
   calendar: writeY4M("calendar", [frame(image("calendar"), 0, 490)]),
   pan: writeY4M("pan", pan), // 1.3 s still, 0.5 s fast pan right, 2 s still, then a jump back
   tremor: writeY4M("tremor", Array.from({ length: 45 }, () => frame(zh, jitter(), 1100, jitter()))), // big text, shaky hand
+  // A screen with a video on it: the view is still, the subtitle changes every 1.5 s, and a spot
+  // moves across the picture behind it.
+  subtitles: writeY4M("subtitles", Array.from({ length: 45 }, (_, k) => spot(frame(image(k < 23 ? "subs_a" : "subs_b"), 0, 480), 400 + 3 * k, 470, 25))),
   // A hand slowly wandering ±17 px across and ±4 px up and down, one loop every 3 s.
   wander: writeY4M("wander", Array.from({ length: 45 }, (_, k) => frame(zh, Math.round(17 * Math.sin((2 * Math.PI * k) / 45)), 1100, Math.round(4 * Math.sin((4 * Math.PI * k) / 45))))),
 };
@@ -341,6 +350,20 @@ async function tremorScene() {
   await browser.close();
 }
 
+async function subtitleScene() {
+  console.log("-- subtitles: only the subtitle changes, and each change is read");
+  const { browser, page, errors } = await open(clips.subtitles);
+  await startLive(page);
+  const log = await watch(page, 6000);
+  const reads = log.at(-1).reads - log[0].reads, shown = log.filter((e) => !e.faded).length / log.length;
+  console.log(`    ${reads} reads in 6 s (4 subtitle changes), labels shown ${(100 * shown).toFixed(0)} %`);
+  await shot(page, "subtitles");
+  check(reads >= 3 && reads <= 6, "each new subtitle is read, and nothing more");
+  check(shown >= 0.8, "the labels stay up meanwhile");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 async function wanderScene() {
   console.log("-- slow wander at 3×: labels follow the drift, few re-reads");
   const { browser, page, errors } = await open(clips.wander);
@@ -525,7 +548,7 @@ async function downloadScene() {
 }
 
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene, subtitles: subtitleScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

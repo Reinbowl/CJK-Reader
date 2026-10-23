@@ -15,7 +15,7 @@ node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
 npm run e2e                             # Playwright, headless Chromium, fake camera (~1 min)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, stack, page, zoom, pan, tremor, wander, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, stack, page, zoom, pan, tremor, wander, subtitles, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
 uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page subs  # regenerate these test images
@@ -48,10 +48,11 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - `sample()` runs every `GATE_MS` and compares normalised grey thumbnails (`thumbnail()`, `compare()` with a shift search of ±`reach()` px), setting `gate.state` to moving, ready or idle and `gate.fast`.
   - "Same scene" means the residual after the best shift (sub-pixel: `compare()` samples bilinearly there) is under `2 × gate.noise + 0.1`. `gate.noise` is a running average of that residual while steady, so big sharp text tolerates more jitter.
   - The thumbnail is `THUMB_W / zoom` px wide, down to `MIN_THUMB` (16 px, reached at 2.5×). Past that its shifts are scaled by its `u` (1× thumbnail px per px). The thresholds are in 1× thumbnail px, so they mean the same hand movement at any zoom. The shift search (`reach()`) covers `SEARCH` of those px, but at most a quarter of the thumbnail. The e2e `tremor` scene checks that 2× and 3× are judged like 1×, and `wander` that labels follow a slow drift at 3×.
-  - `FAST_PX` (per sample) fades the overlay. Below `STEADY_PX` for `SETTLE` samples the view counts as steady. A read happens once drift since the last read exceeds `CHANGE_PX`, or the scene changes.
+  - `FAST_PX` (per sample) fades the overlay. Below `STEADY_PX` for `SETTLE` samples the view counts as steady. A read happens once drift since the last read exceeds `CHANGE_PX`, or the scene changes, or text changed in place (`gate.renew`).
+  - Text changing in place (subtitles): `compare()` also returns the residual per `CELL`×`CELL` square (`cells`, in the newer thumbnail's coordinates). On steady samples, `newContent()` gives each square a noise level that follows the top of its range (jumps don't teach it), and flags a square that jumps by `CHANGED` × that (at least `CHANGED_MIN`), then stays quiet for `SETTLE` samples, differs from the read, and lies where recent reads found text (`textCells()`, kept for 3 reads). New squares learn for 1 s first. `liveLoop` clears `gate.renew` when a read starts. The text condition is what keeps a playing video from triggering reads; the overlay isn't faded for it.
   - `liveLoop` reads only in `ready`, with a duty-cycle gap (`MIN_GAP`, and at least the last read's duration).
   - `#overlay` gets the `faded` class on fast moves, and otherwise a CSS translate that follows the drift.
-  - Tune the thresholds on a phone with the dev panel's readout, which shows shifts in 1× thumbnail px, like the thresholds. The e2e `pan` (fast), `tremor` (big text, jitter) and `wander` (slow drift) clips pin the behaviour.
+  - Tune the thresholds on a phone with the dev panel's readout, which shows shifts in 1× thumbnail px, like the thresholds. The e2e `pan` (fast), `tremor` (big text, jitter), `wander` (slow drift) and `subtitles` (subtitle changes with a moving spot behind them) clips pin the behaviour.
 - **Zoom (`app.js`):**
   - Live: `zoom` = the camera's own zoom (`hwZoom`, from `getCapabilities().zoom`, applied by `cameraZoom()` with one `applyConstraints` in flight) × digital `dzoom`.
   - Range: up to `CAMERA_MAX` (5) with camera zoom (iOS Safari reports 0.5–10×), `DIGITAL_MAX` (3) without, and `STILL_ZOOM_MAX` (5) for frozen frames.

@@ -49,6 +49,11 @@ Live mode doesn't read every frame:
     movement it measures is scaled down instead, so 5× allows as much hand movement as 1×.
   - Zoomed in, the labels follow the text for up to a quarter of the screen (about 100 px at 5×)
     before the view counts as new and is read again.
+  - **Text that changes in place** (the next subtitle on a screen) is read again too, even though
+    the view hasn't moved. The gate watches small squares of the thumbnail where the last reads
+    found text: one that changes in a single step and then holds still for 0.2 s means new text.
+    Moving pictures elsewhere (the video itself) don't trigger reads. The old labels stay up until
+    the new read is drawn.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
   the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
   switches to WASM until the next launch, and the status bar says so.
@@ -195,6 +200,9 @@ padding.
 
 ## Known limitations
 
+- **Subtitles** are noticed where the last few reads found text. One that appears somewhere new is
+  read once the view moves or the shutter is pressed. A bright object moving across a plain
+  picture can look like the camera moving, and makes the app read again more often than needed.
 - **Japanese readings** come from a word dictionary (IPADIC via kuromoji), so unusual names or
   readings can be wrong. Sound changes in counters aren't applied (一杯 shows "ichi hai", not
   "ippai").

@@ -187,6 +187,11 @@ async function read(image, detLimit, minLineH = 0) {
 // - Otherwise the overlay follows the drift, so hand tremor doesn't hide the labels.
 // - A read starts once the view has been steady for SETTLE samples and has drifted more than
 //   CHANGE_PX or shows something else.
+// - Or when text changed in place and has kept still since (the next subtitle on a screen): each
+//   CELL×CELL square of the thumbnail learns how much it varies from one steady sample to the next,
+//   and a jump of CHANGED × that (at least CHANGED_MIN), then SETTLE quiet samples, to something
+//   other than what was read, counts where the last reads found text. Elsewhere it would be the
+//   video itself moving, which mustn't keep the reader busy. The labels stay up meanwhile.
 // "Same scene" is judged against the noise seen while steady: big sharp text leaves more residue
 // after a sub-pixel shift than a soft scene, and the tolerance grows with it.
 // Zoomed in, the same hand shake moves the picture further, so the thumbnail gets coarser in step
@@ -196,9 +201,10 @@ async function read(image, detLimit, minLineH = 0) {
 // most a quarter of the thumbnail: zoomed in, a small movement is a big part of the view.
 const GATE_MS = 100, THUMB_W = 40, MIN_THUMB = 16, SEARCH = 6, SETTLE = 2;
 const FAST_PX = 2, STEADY_PX = 0.8, CHANGE_PX = 3; // 1× thumbnail px (per sample for the first two)
+const CELL = 4, CHANGED = 4, CHANGED_MIN = 0.15; // CELL: thumbnail px
 const thumbCanvas = document.createElement("canvas");
 const thumbCtx = thumbCanvas.getContext("2d", { willReadFrequently: true });
-const gate = { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null, timer: 0 };
+const gate = { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null, cellNoise: null, since: null, learned: 0, text: null, renew: false, timer: 0 };
 
 function thumbnail() {
   const { sx, sy, sw, sh } = visibleRect(video.videoWidth, video.videoHeight, "cover", dzoom);
@@ -245,15 +251,22 @@ function compare(a, b) {
   const fy = by > 0 && by < n - 1 ? vertex(cost[best - n], cost[best], cost[best + n]) : 0;
   const dx = bx - R + fx, dy = by - R + fy, ix = Math.floor(dx), iy = Math.floor(dy), tx = dx - ix, ty = dy - iy;
   const at = (x, y) => b.g[Math.min(h - 1, Math.max(0, y)) * w + Math.min(w - 1, Math.max(0, x))];
+  const cw = Math.ceil(w / CELL), ch = Math.ceil(h / CELL), sum = new Float32Array(cw * ch), count = new Uint16Array(cw * ch);
+  const cell = (v, n) => Math.min(n - 1, Math.max(0, Math.floor(v / CELL)));
   let s = 0;
   for (let y = R; y < h - R; y++) {
     for (let x = R; x < w - R; x++) {
       const x0 = x + ix, y0 = y + iy;
       const top = at(x0, y0) + (at(x0 + 1, y0) - at(x0, y0)) * tx, bot = at(x0, y0 + 1) + (at(x0 + 1, y0 + 1) - at(x0, y0 + 1)) * tx;
-      s += Math.abs(top + (bot - top) * ty - a.g[y * w + x]);
+      const e = Math.abs(top + (bot - top) * ty - a.g[y * w + x]), c = cell(y + dy, ch) * cw + cell(x + dx, cw);
+      s += e;
+      sum[c] += e;
+      count[c]++;
     }
   }
-  return { dx, dy, err: s / ((w - 2 * R) * (h - 2 * R)) };
+  // Cells of b (the newer thumbnail), so motion and drift cells are the same parts of the view.
+  const cells = sum.map((v, c) => (count[c] >= (CELL * CELL) / 2 ? v / count[c] : 0));
+  return { dx, dy, err: s / ((w - 2 * R) * (h - 2 * R)), cells };
 }
 
 function sample() {
@@ -270,7 +283,9 @@ function sample() {
   gate.still = steady ? gate.still + 1 : 0;
   const d = (gate.drift = compare(gate.read, cur));
   const keep = same(d); // still the scene the overlay was read from, maybe shifted
-  gate.state = gate.still < SETTLE ? "moving" : !keep || dist(d) > CHANGE_PX ? "ready" : "idle";
+  if (steady) gate.renew ||= newContent(m, d);
+  else gate.since?.fill(0);
+  gate.state = gate.still < SETTLE ? "moving" : !keep || dist(d) > CHANGE_PX || gate.renew ? "ready" : "idle";
   const show = !fast && keep;
   overlay.classList.toggle("faded", !show);
   if (show) {
@@ -282,9 +297,49 @@ function sample() {
   if (DEBUG) debugReadout();
 }
 
+// Steady samples only: did a square of the view jump and then keep still for SETTLE samples?
+// gate.since counts the samples since each square's last jump. A square's noise follows the top of
+// its range (up fast, down slowly); jumps don't count, so a change doesn't teach the square to
+// ignore the next one. New squares (live start, a zoom) learn for 1 s first.
+function newContent(m, d) {
+  const n = m.cells.length;
+  if (gate.cellNoise?.length !== n) Object.assign(gate, { cellNoise: new Float32Array(n).fill(0.1), since: new Uint8Array(n), learned: 0 });
+  let found = false;
+  gate.learned++;
+  for (let c = 0; c < n; c++) {
+    const noise = gate.cellNoise[c], limit = Math.max(CHANGED_MIN, CHANGED * noise), v = m.cells[c];
+    if (v > limit) {
+      gate.since[c] = 1;
+      continue;
+    }
+    gate.cellNoise[c] = Math.max(0.01, noise + (v > noise ? 0.5 : 0.05) * (v - noise));
+    if (gate.since[c] && ++gate.since[c] > SETTLE) {
+      gate.since[c] = 0;
+      found ||= gate.learned > 10 && !!gate.text?.[c] && !!d && d.cells[c] > limit; // text, and not as read
+    }
+  }
+  return found;
+}
+
+// Squares of thumbnail t at or next to the text a read found (lines, and small ones it skipped):
+// 3 for this read's, one less for each read since, so the place of a subtitle is kept through a
+// gap between subtitles.
+function textCells(r, map, t, prev) {
+  const cw = Math.ceil(t.w / CELL), ch = Math.ceil(t.h / CELL);
+  const mask = prev?.length === cw * ch ? prev.map((v) => Math.max(0, v - 1)) : new Uint8Array(cw * ch);
+  const kx = t.w / view.clientWidth / CELL, ky = t.h / view.clientHeight / CELL;
+  for (const box of [...r.lines.map((l) => l.box), ...r.skipped]) {
+    const xs = box.map(([x]) => (map.ox + x * map.s) * kx), ys = box.map(([, y]) => (map.oy + y * map.s) * ky);
+    const x0 = Math.max(0, Math.floor(Math.min(...xs)) - 1), x1 = Math.min(cw - 1, Math.floor(Math.max(...xs)) + 1);
+    const y0 = Math.max(0, Math.floor(Math.min(...ys)) - 1), y1 = Math.min(ch - 1, Math.floor(Math.max(...ys)) + 1);
+    for (let y = y0; y <= y1; y++) mask.fill(3, y * cw + x0, y * cw + x1 + 1);
+  }
+  return mask;
+}
+
 function startGate() {
   clearInterval(gate.timer);
-  Object.assign(gate, { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null });
+  Object.assign(gate, { state: "moving", fast: true, still: 0, noise: 0.1, prev: null, read: null, motion: null, drift: null, cellNoise: null, since: null, learned: 0, text: null, renew: false });
   overlay.style.transform = "";
   gate.timer = setInterval(sample, GATE_MS);
 }
@@ -622,7 +677,7 @@ function debugReadout() {
   const t = gate.prev, u = t?.u ?? 1; // shifts in 1× thumbnail px, like the thresholds
   const f = (c) => (c ? `${(c.dx * u).toFixed(2)},${(c.dy * u).toFixed(2)} e${c.err.toFixed(2)}` : "-");
   $("#debug").textContent = [
-    `gate ${gate.state}${gate.fast ? " fast" : ""} still ${gate.still} noise ${gate.noise.toFixed(2)} motion ${f(gate.motion)} drift ${f(gate.drift)}`,
+    `gate ${gate.state}${gate.fast ? " fast" : ""} still ${gate.still} noise ${gate.noise.toFixed(2)} motion ${f(gate.motion)} drift ${f(gate.drift)}${gate.renew ? " new" : ""}`,
     `reads ${stats.reads} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
     `zoom ${zoom.toFixed(2)}× (${hwZoom ? `camera ${hwZoom.min}–${hwZoom.max}×, digital ${dzoom.toFixed(2)}×` : "digital"})${t ? ` · thumb ${t.w}px ±${reach(t)} u${u.toFixed(2)}` : ""}${mode === "still" ? ` · still ${sv.s.toFixed(2)}×` : ""}`,
     `inner ${innerWidth}×${innerHeight} screen ${screen.width}×${screen.height} vv ${visualViewport?.height.toFixed(0)} view ${view.clientHeight}`,
@@ -869,6 +924,7 @@ async function liveLoop(token) {
     await sleep(GATE_MS);
     if (gate.state !== "ready" || performance.now() < next || video.readyState < 2) continue;
     const at = thumbnail(); // of the frame being read: drift is measured from it
+    gate.renew = false; // this read covers whatever changed so far
     const { image, map } = grab(video, video.videoWidth, video.videoHeight, LIVE_MAX, "cover", dzoom);
     const t0 = performance.now();
     try {
@@ -878,6 +934,7 @@ async function liveLoop(token) {
       stats.busy += took;
       next = performance.now() + Math.max(MIN_GAP, took);
       gate.read = at;
+      gate.text = textCells(r, map, at, gate.text);
       overlay.style.transform = "";
       draw(r, map);
       sample(); // shift the new overlay to where the text is now, or hide it if the view moved meanwhile
