@@ -57,11 +57,15 @@ Live mode doesn't read every frame:
     alone runs now and then, without the recognizer: every 3 detector runs' time (as long as the
     last read's detector took), at least 0.25 s and at most 2 s apart. On a phone whose detector
     takes 150 ms that's every 0.45 s, so the detector is busy about a third of the time while you
-    hold still. Each check compares its text boxes with the last read's: a box that appeared
-    or went, or whose text looks different. That comparison is a small fingerprint of each box's
-    character shapes, so a colour sweep over the same words doesn't count. Seen by two checks in a
-    row, a change gets a full read. Moving pictures without text don't trigger anything. The old
-    labels stay up until the new read is drawn.
+    hold still. Each check compares its text boxes with the last read's, but only in the **text
+    band**: the rows where the last three reads found Chinese, Japanese or Korean, plus a line
+    height above and below, across the whole width. A change there is a box that appeared or went,
+    or whose text looks different (a small fingerprint of its character shapes, so a colour sweep
+    over the same words doesn't count). Seen by two checks in a row, a change gets a full read of
+    the whole view. Outside the band nothing counts: the picture, a clock, the detector flickering
+    on a logo. Neither do lines the read found to be English or numbers. Until a read has found any
+    such text, any new box shaped like a line of text counts. The old labels stay up until the new
+    read is drawn.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
   the still read starts right away.
 - **WebGPU first:** the models run on the GPU where the browser offers WebGPU (on an iPhone 16 Pro
@@ -218,6 +222,9 @@ padding.
   less of themselves as the hand drifts, so a change there waits until the view moves. A bright
   object moving across a plain picture can look like the camera moving, and makes the app read
   again more often than needed.
+- **New text outside the text band** isn't noticed while you hold still and nothing in the band
+  changes. Say a second subtitle appears at the top after the read of a new bottom subtitle. It's
+  read at the next change in the band, or when you move the phone or press the shutter.
 - **Japanese readings** come from a word dictionary (IPADIC via kuromoji), so unusual names or
   readings can be wrong. Sound changes in counters aren't applied (一杯 shows "ichi hai", not
   "ippai").

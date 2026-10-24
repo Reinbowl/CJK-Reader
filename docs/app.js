@@ -656,7 +656,7 @@ function debugReadout() {
   const f = (c) => (c ? `${(c.dx * u).toFixed(2)},${(c.dy * u).toFixed(2)} e${c.err.toFixed(2)}` : "-");
   $("#debug").textContent = [
     `gate ${gate.state}${gate.fast ? " fast" : ""} still ${gate.still} noise ${gate.noise.toFixed(2)} motion ${f(gate.motion)} drift ${f(gate.drift)}${gate.renew ? " new" : ""}`,
-    `reads ${stats.reads} checks ${stats.probes}${gate.check ? ` (${gate.check.boxes}/${gate.check.was} boxes, ${gate.check.missing} new, diff ${gate.check.diff.toFixed(2)})` : ""} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
+    `reads ${stats.reads} checks ${stats.probes}${gate.check ? ` (${gate.check.boxes}/${gate.check.was} boxes, ${gate.check.missing} new, diff ${gate.check.diff.toFixed(2)}, band ${gate.check.band})` : ""} busy ${(stats.busy / 1000).toFixed(1)} s · ${backend}×${THREADS} spin ${SPIN ? 1 : 0}${stats.backend.gpu ? ` · gpu ${stats.backend.gpu}` : ""}`,
     `zoom ${zoom.toFixed(2)}× (${hwZoom ? `camera ${hwZoom.min}–${hwZoom.max}×, digital ${dzoom.toFixed(2)}×` : "digital"})${t ? ` · thumb ${t.w}px ±${reach(t)} u${u.toFixed(2)}` : ""}${mode === "still" ? ` · still ${sv.s.toFixed(2)}×` : ""}`,
     `inner ${innerWidth}×${innerHeight} screen ${screen.width}×${screen.height} vv ${visualViewport?.height.toFixed(0)} view ${view.clientHeight}`,
     `safe ${[s.paddingTop, s.paddingRight, s.paddingBottom, s.paddingLeft].map(parseFloat).join("/")} standalone ${navigator.standalone ?? matchMedia("(display-mode: standalone)").matches}`,
@@ -911,15 +911,36 @@ async function detectOnly() {
   }
 }
 
-// Has the text changed since the read (ref), going by a detector-only check (now)? A box appeared or
-// went, or reads differently (its fingerprint). Boxes are matched by overlap, the read's moved by the
-// drift the gate measured since. Boxes at the edge of the frame don't count: a line cut off there
-// shows more or less of itself as the hand drifts.
+// What the checks between reads compare against: every box the read found, with its fingerprint;
+// the lines it recognised as text without readings (English, numbers), which don't count; and the
+// text band, the rows where this read and the two before it found lines with readings, a line height
+// above and below. at: the read's thumbnail; older rows are moved by the drift since the last read,
+// and dropped if the view changed.
+function textRef(r, map, image, at, prev) {
+  const moved = prev && compare(gate.read, at), k = view.clientWidth / at.w / map.s;
+  const band = moved && moved.err < 2 * gate.noise + 0.1
+    ? prev.band.filter((b) => b.age < 2).map((b) => ({ y0: b.y0 + moved.dy * k, y1: b.y1 + moved.dy * k, age: b.age + 1 }))
+    : [];
+  const silent = new Set();
+  r.lines.forEach((line, i) => {
+    if (!r.notes[i]?.units.some((u) => labelFor(u, r.lang))) return silent.add(line.index);
+    const ys = line.box.map((p) => p[1]), h = Math.hypot(...line.B);
+    band.push({ y0: Math.min(...ys) - h, y1: Math.max(...ys) + h, age: 0 });
+  });
+  return { boxes: r.boxes, prints: r.prints, silent, band, map, size: [image.width, image.height], gap: Math.min(PROBE_MAX, Math.max(PROBE_MIN, 3 * r.ms.det)) };
+}
+
+// Has the text changed since the read (ref), going by a detector-only check (now)? Within the text
+// band: a box appeared or went, or reads differently (its fingerprint). Outside the band nothing
+// counts (the picture, a clock, the detector flickering on a logo), nor do lines the read found
+// without readings; with no band yet, any box shaped like a line of text does. Boxes are matched by
+// overlap, the read's moved by the drift the gate measured since. Boxes at the edge of the frame
+// don't count: a line cut off there shows more or less of itself as the hand drifts.
 const PRINT_DIFF = 0.62; // the same line re-detected: mostly under 0.55; another as long: 0.7 and up
 function textChanged(ref, now) {
-  const d = gate.drift, k = d && gate.prev ? view.clientWidth / gate.prev.w / ref.map.s : 0;
-  const rect = (b, dx = 0, dy = 0) => {
-    const xs = b.map((p) => p[0] + dx), ys = b.map((p) => p[1] + dy);
+  const d = gate.drift, k = d && gate.prev ? view.clientWidth / gate.prev.w / ref.map.s : 0, dx = (d?.dx ?? 0) * k, dy = (d?.dy ?? 0) * k;
+  const rect = (b, x = 0, y = 0) => {
+    const xs = b.map((p) => p[0] + x), ys = b.map((p) => p[1] + y);
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   };
   const iou = (a, b) => {
@@ -927,22 +948,26 @@ function textChanged(ref, now) {
     return w > 0 && h > 0 ? (w * h) / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - w * h) : 0;
   };
   const [W, H] = ref.size, inside = (r) => r[0] > 3 && r[1] > 3 && r[2] < W - 3 && r[3] < H - 3;
-  const was = ref.boxes.map((b) => inside(rect(b)) && rect(b, (d?.dx ?? 0) * k, (d?.dy ?? 0) * k)).map((r) => (r && inside(r) ? r : null));
-  const used = new Set(), seen = (gate.check = { boxes: 0, was: was.filter(Boolean).length, missing: 0, diff: 0 });
+  const band = ref.band.map((b) => [b.y0 + dy, b.y1 + dy]);
+  const watched = (r) => inside(r) && (band.length ? band.some(([y0, y1]) => r[3] > y0 && r[1] < y1) : r[2] - r[0] > r[3] - r[1]);
+  const was = ref.boxes.map((b) => rect(b, dx, dy));
+  const counts = was.map((r, i) => !ref.silent.has(i) && inside(rect(ref.boxes[i])) && watched(r));
+  const used = new Set(), seen = (gate.check = { boxes: 0, was: counts.filter(Boolean).length, missing: 0, diff: 0, band: band.length });
   for (let j = 0; j < now.boxes.length; j++) {
     const box = rect(now.boxes[j]);
-    if (!inside(box)) continue;
-    seen.boxes++;
     let best = -1, most = 0.5;
     was.forEach((r, i) => {
-      const v = r ? iou(r, box) : 0;
+      const v = iou(r, box);
       if (v >= most) [best, most] = [i, v];
     });
+    if (best >= 0 ? !counts[best] : !watched(box)) continue; // not text that counts, or not where text is
+    if (best >= 0) used.add(best);
+    if (!inside(box)) continue;
+    seen.boxes++;
     if (best < 0) seen.missing++;
     else seen.diff = Math.max(seen.diff, printDiff(ref.prints[best], now.prints[j]));
-    used.add(best);
   }
-  return seen.missing > 0 || seen.diff > PRINT_DIFF || was.some((r, i) => r && !used.has(i));
+  return seen.missing > 0 || seen.diff > PRINT_DIFF || counts.some((c, i) => c && !used.has(i));
 }
 
 // Reads only when the motion gate says the view is steady and new, and stays at most ~50 % busy.
@@ -983,8 +1008,8 @@ async function liveLoop(token) {
       const took = performance.now() - t0;
       stats.busy += took;
       next = performance.now() + Math.max(MIN_GAP, took);
+      ref = textRef(r, map, image, at, ref);
       gate.read = at;
-      ref = { boxes: r.boxes, prints: r.prints, map, size: [image.width, image.height], gap: Math.min(PROBE_MAX, Math.max(PROBE_MIN, 3 * r.ms.det)) };
       [gap, seen] = [ref.gap, false];
       checkAt = next + gap;
       overlay.style.transform = "";

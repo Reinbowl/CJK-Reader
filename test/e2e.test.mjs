@@ -97,6 +97,10 @@ const clips = {
   // A screen with a video on it: the view is still, the subtitle changes every 1.5 s, and a spot
   // moves across the picture behind it.
   subtitles: writeY4M("subtitles", Array.from({ length: 45 }, (_, k) => spot(frame(image(k < 23 ? "subs_a" : "subs_b"), 0, 480), 400 + 3 * k, 470, 25))),
+  // A subtitle, a second with none, then the next one.
+  gap: writeY4M("gap", [...repeat(frame(image("subs_a"), 0, 480), 23), ...repeat(frame(image("subs_gap"), 0, 480), 15), ...repeat(frame(image("subs_b"), 0, 480), 22)]),
+  // The same video with its subtitle still, and a clock away from it ticking every second.
+  clock: writeY4M("clock", [...repeat(frame(image("clock_a"), 0, 480), 15), ...repeat(frame(image("clock_b"), 0, 480), 15)]),
   // A hand slowly wandering ±17 px across and ±4 px up and down, one loop every 3 s.
   wander: writeY4M("wander", Array.from({ length: 45 }, (_, k) => frame(zh, Math.round(17 * Math.sin((2 * Math.PI * k) / 45)), 1100, Math.round(4 * Math.sin((4 * Math.PI * k) / 45))))),
 };
@@ -294,7 +298,7 @@ const watch = (page, ms) => page.evaluate(async (ms) => {
   const out = [];
   for (const t0 = performance.now(); performance.now() - t0 < ms; await new Promise((r) => setTimeout(r, 50))) {
     const s = self.cjkStats;
-    out.push({ gate: s.gate, fast: s.fast, reads: s.reads, faded: document.querySelector("#overlay").classList.contains("faded") });
+    out.push({ gate: s.gate, fast: s.fast, reads: s.reads, lines: s.lines, faded: document.querySelector("#overlay").classList.contains("faded") });
   }
   return out;
 }, ms);
@@ -363,6 +367,31 @@ async function subtitleScene() {
   await shot(page, "subtitles");
   check(reads >= 3 && reads <= 6, "each new subtitle is read, and nothing more");
   check(shown >= 0.8, "the labels stay up meanwhile");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function gapScene() {
+  console.log("-- subtitles with a gap between them: the next one is still noticed");
+  const { browser, page, errors } = await open(clips.gap);
+  await startLive(page);
+  const log = await watch(page, 8000);
+  // The gap's read finds the title alone (3 lines); the next subtitle brings it back to 4.
+  const back = log.some((e, i) => i && e.lines === 4 && log[i - 1].lines === 3);
+  console.log(`    lines over time: ${log.filter((e, i) => !i || e.lines !== log[i - 1].lines).map((e) => e.lines).join(" → ")}`);
+  check(back, "after a gap, the next subtitle is read: the band remembers where subtitles were");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
+async function clockScene() {
+  console.log("-- a clock ticking away from the Chinese text: no reads");
+  const { browser, page, errors } = await open(clips.clock);
+  await startLive(page);
+  const log = await watch(page, 6000);
+  const reads = log.at(-1).reads - log[0].reads, s = await stats(page);
+  console.log(`    ${reads} reads in 6 s (6 changes), ${s.lines} lines`);
+  check(reads === 0, "English and numbers changing away from the Chinese don't trigger reads");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   await browser.close();
 }
@@ -563,7 +592,7 @@ async function downloadScene() {
 }
 
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene, subtitles: subtitleScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene, subtitles: subtitleScene, gap: gapScene, clock: clockScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

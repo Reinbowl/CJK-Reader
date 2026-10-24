@@ -296,7 +296,7 @@ export function ctcDecode(probs, n, T, C, chars) {
 
 // ort: the onnxruntime-web module; det/rec: InferenceSessions; img: {data: RGBA, width, height}.
 // Boxes thinner than minLineH px are not recognised (too small to label) and come back in `skipped`;
-// `boxes` is every box the detector found, recognised or not.
+// `boxes` is every box the detector found, recognised or not (a line's `index` is its place there).
 // stop() is checked between model runs; once it returns true the read gives up with a "cancelled"
 // error (the shutter does this to a live read still in progress).
 export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, minLineH = 0, cols = REC_COLS, dropScore = 0.5, stop = () => false } = {}) {
@@ -340,7 +340,7 @@ export async function runOCR(ort, { det, rec, chars }, img, { detLimit = 960, mi
     if (!r) return skipped.push(pts);
     if (r.score < dropScore || !r.text.trim()) return;
     const g = geoms[i];
-    lines.push({ text: r.text, score: r.score, box: pts, chars: r.chars, A: g.A, B: g.B, vertical: g.vertical });
+    lines.push({ text: r.text, score: r.score, box: pts, index: i, chars: r.chars, A: g.A, B: g.B, vertical: g.vertical });
   });
   return { lines, skipped, boxes, recognised: order.length, ms: { det: t1 - t0, rec: t2 - t1 }, detSize: [di.w, di.h] };
 }

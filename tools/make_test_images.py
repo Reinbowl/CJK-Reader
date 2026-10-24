@@ -1,7 +1,7 @@
 """Render synthetic sign/label photos with known text for checking the OCR pipeline.
 
     uv run tools/make_test_images.py --fonts /path/to/noto-cjk-otfs
-    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page subs   # just these
+    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page subs clock   # just these
 
 Writes test/images/*.png and test/images/truth.json (entries for scenes not rendered are kept).
 """
@@ -147,12 +147,14 @@ def render_page(font_path, rng, size=(1100, 560)):
 
 
 # A video frame: a title of three lines stacked with almost no gap, and a subtitle at the bottom.
-# subs_a and subs_b differ only in the subtitle, like two moments of the same video.
+# subs_a and subs_b differ only in the subtitle, like two moments of the same video (subs_gap has
+# none); clock_a and clock_b only in a clock in the middle of the picture, away from the Chinese.
 SUBS_TITLE = ["今晚的月亮又圆又亮", "我们一起去海边走走吧", "听听风和海浪的声音"]
-SUBS = {"subs_a": "你今天过得怎么样", "subs_b": "明天我们再见面吧"}
+SUBS = {"subs_a": "你今天过得怎么样", "subs_b": "明天我们再见面吧", "subs_gap": ""}
+CLOCKS = {"clock_a": "12:41", "clock_b": "12:42 PM"}
 
 
-def render_subs(font_path, subtitle, size=(1280, 720)):
+def render_subs(font_path, subtitle, size=(1280, 720), clock=None):
     w, h = size
     rng = np.random.default_rng(19)  # same background for every subtitle
     ramp = np.linspace(0, 1, h)[:, None, None]
@@ -161,9 +163,12 @@ def render_subs(font_path, subtitle, size=(1280, 720)):
     d = ImageDraw.Draw(img)
     for i, text in enumerate(SUBS_TITLE):
         d.text((60, 60 + i * 72), text, font=ImageFont.truetype(str(font_path), 60), fill=(240, 240, 250))
-    d.text((w // 2, 640), subtitle, font=ImageFont.truetype(str(font_path), 48), fill=(255, 255, 255), anchor="mm",
-           stroke_width=2, stroke_fill=(0, 0, 0))
-    return img.filter(ImageFilter.GaussianBlur(0.6)), SUBS_TITLE + [subtitle]
+    if subtitle:
+        d.text((w // 2, 640), subtitle, font=ImageFont.truetype(str(font_path), 48), fill=(255, 255, 255), anchor="mm",
+               stroke_width=2, stroke_fill=(0, 0, 0))
+    if clock:
+        d.text((1180, 450), clock, font=ImageFont.truetype(str(font_path), 56), fill=(250, 250, 250), anchor="rm")
+    return img.filter(ImageFilter.GaussianBlur(0.6)), SUBS_TITLE + ([subtitle] if subtitle else []) + ([clock] if clock else [])
 
 
 def main():
@@ -172,7 +177,7 @@ def main():
     ap.add_argument("--scenes", nargs="*", help="only render these (default: all)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    want = set(args.scenes or [*SCENES, "calendar", "carton", "page", "subs"])
+    want = set(args.scenes or [*SCENES, "calendar", "carton", "page", "subs", "clock"])
     rng = np.random.default_rng(7)
     random.seed(7)
     truth_path = OUT / "truth.json"
@@ -199,6 +204,11 @@ def main():
     if "subs" in want:
         for name, subtitle in SUBS.items():
             img, lines = render_subs(args.fonts / "NotoSansCJKsc-Regular.otf", subtitle)
+            img.save(OUT / f"{name}.png")
+            truth[name] = {"lang": "zh", "lines": lines}
+    if "clock" in want:
+        for name, clock in CLOCKS.items():
+            img, lines = render_subs(args.fonts / "NotoSansCJKsc-Regular.otf", SUBS["subs_a"], clock=clock)
             img.save(OUT / f"{name}.png")
             truth[name] = {"lang": "zh", "lines": lines}
     truth_path.write_text(json.dumps(truth, ensure_ascii=False, indent=1), encoding="utf-8")
