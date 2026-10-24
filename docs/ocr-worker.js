@@ -7,6 +7,9 @@ const where = (e) => (String(e?.stack ?? "").match(/([\w.-]+\.m?js):(\d+)/) ?? [
 const DICT = { zhja: "dict_zhja.txt", ko: "dict_ko.txt" };
 let ort, det, opts, ready;
 let backend, fallback = null, gpu = null; // the backend actually in use, and why it isn't the one asked for
+// broken: WebGPU failed for good on this device: its sessions couldn't be created, or its first read
+// failed (the app remembers that). Losing the GPU after reads have worked doesn't count: iOS does that.
+let broken = false, ranOnGpu = false;
 const engines = {}, models = {}; // models: downloaded bytes, kept to rebuild sessions on WASM
 
 // Everything that runs or creates a session goes through here, one at a time. Messages keep arriving
@@ -64,6 +67,7 @@ async function session(file) {
   } catch (e) {
     fallback = `WebGPU failed: ${e?.message ?? e}`;
     backend = "wasm";
+    broken = true;
     return create();
   }
 }
@@ -75,9 +79,10 @@ function toWasm(reason) {
   rebuilding ??= (async () => {
     fallback = `WebGPU failed: ${reason}`;
     backend = "wasm";
+    broken ||= !ranOnGpu;
     for (const m in engines) delete engines[m];
     det = await session(`det.${opts.precision}.onnx`);
-    postMessage({ type: "backend", backend, fallback, gpu });
+    postMessage({ type: "backend", backend, fallback, gpu, broken });
   })();
   return rebuilding;
 }
@@ -122,7 +127,7 @@ onmessage = async ({ data }) => {
         det = await session(`det.${data.precision}.onnx`);
       })();
       await ready;
-      postMessage({ id, backend, fallback, gpu });
+      postMessage({ id, backend, fallback, gpu, broken });
     } else if (type === "load") {
       await engine(data.model);
       postMessage({ id });
@@ -135,6 +140,7 @@ onmessage = async ({ data }) => {
       let res;
       try {
         res = await read();
+        ranOnGpu ||= backend === "webgpu";
       } catch (e) {
         if (e?.cancelled || (backend !== "webgpu" && !rebuilding)) throw e;
         await toWasm(String(e?.message ?? e));

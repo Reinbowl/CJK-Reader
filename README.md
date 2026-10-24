@@ -31,7 +31,7 @@ first visit.
 ```
 camera frame ──► ocr-worker.js (module worker)
                    ocr-core.js: DB text detection → rotated crops → CTC recognition
-                   onnxruntime-web, WASM (default) or WebGPU
+                   onnxruntime-web, WebGPU (default) or WASM
              ──► reading-worker.js (classic worker)
                    reading.js: pinyin-pro (zh) · kuromoji + wanakana (ja) · RR rules (ko)
              ──► app.js draws each reading over its characters
@@ -63,8 +63,13 @@ Live mode doesn't read every frame:
     row, a change gets a full read. Moving pictures without text don't trigger anything. The old
     labels stay up until the new read is drawn.
 - **One at a time:** reads never overlap. The shutter cancels a live read that's still running, so
-  the still read starts right away. If WebGPU fails mid-session (iOS can drop the GPU), the app
-  switches to WASM until the next launch, and the status bar says so.
+  the still read starts right away.
+- **WebGPU first:** the models run on the GPU where the browser offers WebGPU (on an iPhone 16 Pro
+  the recognizer is about twice as fast as on WASM), else on WASM, and the status bar says which
+  and why. If WebGPU fails (iOS can drop the GPU), the app switches to WASM until the next launch.
+  A phone where WebGPU failed in two launches running (it couldn't load the models, or its first
+  read failed) starts on WASM from then on; losing the GPU after reads have worked doesn't count.
+  The dev panel's WebGPU button tries it again.
 - **Pacing:** reads are at least 250 ms apart, and the gap is never shorter than the last read
   took, so the OCR worker is busy at most half the time.
 - **Small lines:** lines thinner than 14 px on screen aren't recognised in live mode (the dev panel
@@ -117,10 +122,10 @@ start screen. If the camera starts before they're done, the status line carries 
 percentage. The Japanese dictionary gets its own bar the first time 日本語 is picked.
 
 - Core app: ~1 MB
-- ONNX Runtime WASM: 14 MB
+- ONNX Runtime: 27 MB for the WebGPU build, on a device with WebGPU; otherwise the WASM build,
+  14 MB
 - Detector + current language's recognizer: 4–6 MB
 - Japanese dictionary (kuromoji): 18 MB, only when 日本語 is picked
-- ONNX Runtime WebGPU build: 27 MB, only when WebGPU is chosen and the device has a GPU adapter
 
 ## Layout
 
@@ -163,8 +168,8 @@ Deploy from a branch → `main` / `/docs`**.
 
 - **File sizes:** the largest file is ~27 MB, well under GitHub's 100 MB limit.
 - **Headers:** GitHub Pages can't send the COOP/COEP headers that multithreaded WASM needs, so
-  `sw.js` adds them. On first visit the page reloads once to pick them up. The status bar shows
-  `wasm×4` when threads are working.
+  `sw.js` adds them. On first visit the page reloads once to pick them up. On WASM, the status bar
+  shows `wasm×4` when threads are working.
 - **Cache:** app code (HTML, JS, CSS) is checked with the server on every load, so a deploy
   shows up on the next reload. Models and vendor files are served cache-first: **bump `ASSETS` in
   `sw.js`** whenever you change them, otherwise installed apps keep the old files. When `sw.js`
@@ -182,7 +187,7 @@ skipped), and the backend actually in use. URL switches:
 
 | param | default | |
 |---|---|---|
-| `ep` | `wasm` | `webgpu` to try the WebGPU backend |
+| `ep` | `webgpu` | `wasm` for the WASM backend; `webgpu` also tries WebGPU on a device that remembers it failing |
 | `precision` | `int8` | `fp32` needs the fp32 files deployed (see `.gitignore`) |
 | `threads` | `min(4, cores)` | `1` to compare single-threaded |
 | `det` | `640` | detector input size in live mode (longest side); lower is faster, higher finds smaller text |

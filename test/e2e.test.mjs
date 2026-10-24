@@ -130,7 +130,9 @@ function lev(a, b) {
 // How far `got` is from being a piece of `want` (lines cut off at the screen edge are pieces), per char.
 const pieceErr = (got, want) => (lev(got, want) - Math.max(0, [...want].length - [...got].length)) / Math.max(1, [...got].length);
 
-async function open(clip, query = "", extraArgs = []) {
+// Most scenes pin WASM: headless Chromium has no GPU adapter, so the default (WebGPU) would only ever
+// take its fallback. The download and calendar scenes run the default.
+async function open(clip, query = "?ep=wasm", extraArgs = []) {
   const browser = await chromium.launch({
     args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${clip}`, ...extraArgs],
     env: { ...process.env, ...fontconfig },
@@ -253,7 +255,7 @@ async function staticScene() {
 
 async function calendarScene() {
   console.log("-- calendar: many small boxes");
-  const { browser, page, errors } = await open(clips.calendar);
+  const { browser, page, errors } = await open(clips.calendar, "");
   // Dev panel: three taps on the status line, then WebGPU (headless Chromium has no adapter, so the
   // app must say it fell back), then back to WASM. Both reload the app; the panel stays open.
   for (let k = 0; k < 3; k++) await page.tap("#status");
@@ -532,7 +534,7 @@ async function zoomScene() {
 async function downloadScene() {
   console.log("-- first visit on a slow connection: one progress bar, start early, no errors");
   throttle = true;
-  const { browser, page, errors } = await open(clips.static);
+  const { browser, page, errors } = await open(clips.static, "");
   await until(page, () => self.cjkStats.download && !self.cjkStats.download.done);
   const first = await page.evaluate(() => ({ text: document.querySelector("#progress p").textContent, pct: self.cjkStats.download.pct }));
   await page.waitForTimeout(1000);
@@ -546,6 +548,15 @@ async function downloadScene() {
   await until(page, () => self.cjkStats.reads >= 1, null, 120000);
   const s = await stats(page);
   check(s.download.ready && s.lines > 0, `then it reads (${s.lines} lines)`);
+  // The default is WebGPU. With no GPU adapter it runs on WASM and says why, without counting that
+  // against the device; after two launches where WebGPU failed, it starts on WASM.
+  check(s.backend.backend === "wasm" && /WebGPU|adapter/.test(s.backend.fallback) && !s.backend.broken, `no GPU here: WASM, and the status says why (${s.backend.fallback})`);
+  check((await page.evaluate(() => localStorage.getItem("webgpu-fails"))) === null, "a missing GPU isn't remembered as a WebGPU failure");
+  await page.evaluate(() => localStorage.setItem("webgpu-fails", "2"));
+  await page.reload();
+  await until(page, () => self.cjkStats?.backend?.backend);
+  const again = (await stats(page)).backend;
+  check(again.backend === "wasm" && /two launches/.test(again.fallback), `after two launches where WebGPU failed, it starts on WASM (${again.fallback})`);
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
   throttle = false;
   await browser.close();

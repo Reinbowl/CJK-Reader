@@ -4,13 +4,22 @@ const $ = (s) => document.querySelector(s);
 const view = $("#view"), video = $("#cam"), still = $("#still"), overlay = $("#overlay");
 const statusEl = $("#status"), sheet = $("#sheet"), linesEl = $("#lines");
 
-// URL switches for performance testing: ?ep=webgpu &precision=fp32 &threads=1 &det=480 &spin=1 &debug=1.
+// URL switches for performance testing: ?ep=wasm &precision=fp32 &threads=1 &det=480 &spin=1 &debug=1.
 // A home-screen app can't be given URL switches, so ep/threads/spin/debug can also be set in the dev
 // panel (tap the status line three times), which keeps them in localStorage. A URL switch wins.
 const params = new URLSearchParams(location.search);
 const dev = (() => { try { return JSON.parse(localStorage.getItem("dev")) || {}; } catch { return {}; } })();
 const setting = (k) => params.get(k) ?? dev[k];
-const EP = setting("ep") === "webgpu" ? "webgpu" : "wasm";
+// WebGPU unless WASM is asked for. A device where WebGPU failed in two launches running (its sessions
+// couldn't be created, or its first read failed) starts on WASM; a launch where it works clears that.
+const GPU_FAILS = "webgpu-fails";
+let gpuFails = (() => { try { return Number(localStorage.getItem(GPU_FAILS)) || 0; } catch { return 0; } })();
+const remembered = setting("ep") !== "webgpu" && gpuFails >= 2;
+const EP = setting("ep") === "wasm" || remembered ? "wasm" : "webgpu";
+function rememberGpuFails(n) {
+  gpuFails = n;
+  try { n ? localStorage.setItem(GPU_FAILS, String(n)) : localStorage.removeItem(GPU_FAILS); } catch {}
+}
 const PRECISION = params.get("precision") === "fp32" ? "fp32" : "int8";
 const THREADS = Number(setting("threads")) || (self.crossOriginIsolated ? Math.min(4, navigator.hardwareConcurrency || 1) : 1);
 const SPIN = String(setting("spin")) === "1"; // let ORT's threads busy-wait between ops (its own default)
@@ -119,7 +128,13 @@ function init() {
 }
 init();
 let backend = EP;
+let failCounted = false;
 function onBackend(r) {
+  if (remembered) r = { ...r, fallback: "WebGPU failed in two launches running; the dev panel's WebGPU button tries it again" };
+  if (r.broken && !failCounted) {
+    failCounted = true;
+    rememberGpuFails(gpuFails + 1);
+  }
   backend = r.fallback ? `${r.backend} (no webgpu)` : r.backend;
   stats.backend = { ...r };
   if (r.fallback) console.warn(r.fallback);
@@ -175,6 +190,7 @@ async function read(image, detLimit, minLineH = 0, prints = false) {
     .catch((e) => { if (e.cancelled) stats.cancelled++; throw e; })
     .finally(() => stats.reading--);
   const notes = res.lines.length ? (await reading({ type: "annotate", lang: l, texts: res.lines.map((x) => x.text) })).lines : [];
+  if (gpuFails && stats.backend.backend === "webgpu") rememberGpuFails(0); // it works here after all
   Object.assign(stats, { reads: stats.reads + 1, lines: res.lines.length, skipped: res.skipped.length, recognised: stats.recognised + res.recognised, ms: res.ms });
   return { ...res, notes, lang: l };
 }
@@ -660,7 +676,11 @@ function showDev() {
     const b = document.createElement("button");
     b.textContent = label;
     b.setAttribute("aria-pressed", String(on));
-    b.onclick = () => { saveDev({ [key]: value }); location.reload(); };
+    b.onclick = () => {
+      saveDev({ [key]: value });
+      if (key === "ep") rememberGpuFails(0); // a backend picked by hand starts afresh
+      location.reload();
+    };
     return b;
   };
   const threads = Number(dev.threads) || 0; // 0: automatic
