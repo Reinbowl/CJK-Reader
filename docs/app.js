@@ -1,5 +1,6 @@
 // Camera -> OCR worker -> reading worker -> overlay of pinyin / romaji / romanization above the text.
 import { printDiff } from "./ocr-core.js";
+import { bytes, core, install, mb, missing, packs, prune, remove, usage } from "./packs.js";
 const $ = (s) => document.querySelector(s);
 const view = $("#view"), video = $("#cam"), still = $("#still"), overlay = $("#overlay");
 const statusEl = $("#status"), sheet = $("#sheet"), linesEl = $("#lines");
@@ -36,12 +37,37 @@ const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
 // What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug.
-const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, probes: 0, zoom: null, download: null });
+const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, probes: 0, zoom: null, download: null, translated: 0 });
+
+// The settings panel (gear): live reading on or off, and which language packs are installed. Chinese
+// reading always is; the rest are downloaded there (packs.js).
+const settings = { live: true, packs: Object.fromEntries(Object.keys(MODEL).map((l) => [l, { read: l === "zh", translate: false }])) };
+const hadSettings = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("settings"));
+    if (!saved) return false;
+    settings.live = saved.live !== false;
+    for (const l in settings.packs) Object.assign(settings.packs[l], saved.packs?.[l]);
+    // Test builds had a second Chinese translator, "lite"; it's the only one now.
+    if (settings.packs.zh.lite) settings.packs.zh.translate = true;
+    for (const l in settings.packs) delete settings.packs[l].lite;
+    return true;
+  } catch { return false; }
+})();
+settings.packs.zh.read = true;
+function saveSettings() {
+  try { localStorage.setItem("settings", JSON.stringify(settings)); } catch {}
+}
 
 let lang = (() => {
-  try { const saved = localStorage.getItem("lang"); if (MODEL[saved]) return saved; } catch {}
-  const nav = (navigator.language || "").slice(0, 2);
-  return MODEL[nav] ? nav : "zh";
+  let l = "zh";
+  try { const saved = localStorage.getItem("lang"); if (MODEL[saved]) l = saved; } catch {}
+  if (l === "zh" && !hadSettings) { const nav = (navigator.language || "").slice(0, 2); if (MODEL[nav]) l = nav; }
+  // From before language packs: the language in use counts as installed (sw.js has its files cached,
+  // and if not, it fetches them now as it always did).
+  if (!hadSettings) settings.packs[l].read = true;
+  saveSettings();
+  return settings.packs[l].read ? l : "zh";
 })();
 let mode = "idle"; // idle | live | still
 let stream = null, loopToken = 0, lastStill = null;
@@ -595,33 +621,128 @@ function draw(result, map) {
   paint(livePlan);
 }
 
-// Fill the list of lines with ruby text; the list button (#list) shows it.
+// Paragraphs: horizontal lines that belong together, as indexes into result.lines, so a sentence
+// wrapped over several lines is translated whole. A line joins a paragraph whose last line is about
+// as thick (within 15 %, like layout()'s "same size"), ends less than a line height above it, and
+// overlaps it sideways. Lines come top to bottom (ocr-core's reading order). Vertical lines stand alone.
+// And that last line must look wrapped: at least WRAP_MIN characters, reaching the new line's right end
+// (within a character), not ending in a number (a price). So a menu or a list of answers stays a
+// paragraph per line, which is how they translate best.
+const WRAP_MIN = 6, PRICE = /\d\s*\S?$/u;
+function paragraphs(lines) {
+  const bounds = (l) => {
+    const xs = l.box.map((p) => p[0]), ys = l.box.map((p) => p[1]);
+    return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys), h: Math.hypot(...l.B), text: l.text };
+  };
+  const wrapped = (p, b) => [...p.text].length >= WRAP_MIN && p.x1 > b.x1 - p.h && !PRICE.test(p.text);
+  const groups = [];
+  lines.forEach((l, i) => {
+    const b = bounds(l);
+    const g = l.vertical ? null : groups.findLast((g) => {
+      const p = g.last;
+      return p && Math.abs(b.h - p.h) <= 0.15 * Math.max(b.h, p.h) && b.y0 > p.y0 + p.h / 2 && b.y0 - p.y1 < b.h &&
+        Math.min(b.x1, p.x1) > Math.max(b.x0, p.x0) && wrapped(p, b);
+    });
+    if (g) { g.lines.push(i); g.last = b; } else groups.push({ lines: [i], last: l.vertical ? null : b });
+  });
+  return groups.map((g) => g.lines);
+}
+
+// Fill the list with ruby text, a paragraph per item; the list button (#list) shows it. Returns each
+// paragraph's text and the element for its English (filled by translateParagraphs).
 function fillSheet(result) {
-  linesEl.replaceChildren(...result.notes.map((note) => {
+  const paras = paragraphs(result.lines).map((idx) => {
     const li = document.createElement("li");
-    const text = document.createElement("div");
-    text.className = "ruby";
-    text.lang = result.lang;
-    for (const u of note.units) {
-      for (const p of u.parts) {
-        if (!p.rt) { text.append(p.s); continue; }
-        const ruby = document.createElement("ruby");
+    for (const i of idx) {
+      const note = result.notes[i];
+      const text = document.createElement("div");
+      text.className = "ruby";
+      text.lang = result.lang;
+      const ruby = (s, r) => {
+        if (!r) return text.append(s);
+        const el = document.createElement("ruby");
         const rt = document.createElement("rt");
-        rt.textContent = p.rt;
-        ruby.append(p.s, rt);
-        text.append(ruby);
+        rt.textContent = r;
+        el.append(s, rt);
+        text.append(el);
+      };
+      // Japanese: romaji over each word, like the camera's labels, and the kana reading underneath.
+      // Chinese and Korean: the reading over each character.
+      for (const u of note.units) {
+        if (result.lang === "ja") ruby(u.parts.map((p) => p.s).join(""), labelFor(u, "ja"));
+        else for (const p of u.parts) ruby(p.s, p.rt);
       }
+      li.append(text);
+      if (result.lang !== "ja" || !note.units.some((u) => u.parts.some((p) => p.rt))) continue;
+      const kana = document.createElement("div");
+      kana.className = "kana";
+      kana.lang = "ja";
+      kana.textContent = note.units.map((u) => u.parts.map((p) => p.rt ?? p.s).join("")).join(" ").replace(/ ([、。！？!?,.])/g, "$1");
+      li.append(kana);
     }
-    li.append(text);
-    // Japanese: romaji under the kana furigana. Elsewhere it would repeat the ruby.
-    if (result.lang !== "ja") return li;
-    const roman = document.createElement("div");
-    roman.className = "roman";
-    roman.textContent = note.roman;
-    li.append(roman);
-    return li;
-  }));
+    const en = document.createElement("div");
+    en.className = "en";
+    en.lang = "en";
+    en.hidden = true;
+    li.append(en);
+    // Korean spaces its words; Chinese and Japanese run on from one line to the next.
+    return { li, en, text: idx.map((i) => result.lines[i].text).join(result.lang === "ko" ? " " : "") };
+  });
+  linesEl.replaceChildren(...paras.map((p) => p.li));
   if (!result.notes.length) linesEl.innerHTML = "<li class=empty>No text found. Try moving closer or holding steady.</li>";
+  return paras;
+}
+
+// ---------- translation ----------
+// After a snap, with the language's translation pack on: each paragraph in English, under it in the
+// list. Never in live mode. The worker is started when first needed and ended on a language switch.
+// A Marian model (OPUS-MT, FuguMT) on onnxruntime, in marian-worker.js.
+let translator = null;
+function translatorFor(l) {
+  if (translator?.lang !== l) {
+    dropTranslator();
+    const worker = new Worker("marian-worker.js", { type: "module" });
+    const call = rpc(worker, () => {});
+    const t = (translator = { lang: l, worker, call });
+    t.ready = packs().then((all) => call({ type: "load", files: all[l].translate.map((f) => f.path) }));
+    t.ready.catch(() => translator === t && dropTranslator()); // a fresh worker next time
+  }
+  return translator;
+}
+function dropTranslator() {
+  translator?.worker.terminate();
+  translator = null;
+}
+
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+const translations = new Map(); // "lang\ntext" -> English, least recently used out
+async function translateParagraphs(r, paras) {
+  if (!settings.packs[r.lang].translate) return;
+  const todo = paras.filter((p) => CJK.test(p.text)); // not English or numbers
+  const key = (t) => `${r.lang}\n${t}`;
+  const ask = [...new Set(todo.map((p) => p.text))].filter((t) => !translations.has(key(t)));
+  for (const p of todo) { p.en.hidden = false; p.en.textContent = "…"; }
+  try {
+    if (ask.length) {
+      const t = translatorFor(r.lang);
+      await t.ready;
+      const { texts } = await t.call({ type: "translate", texts: ask });
+      ask.forEach((a, i) => translations.set(key(a), texts[i]));
+      while (translations.size > 500) translations.delete(translations.keys().next().value);
+    }
+    if (lastStill?.result !== r) return;
+    for (const p of todo) {
+      const en = translations.get(key(p.text));
+      translations.delete(key(p.text));
+      translations.set(key(p.text), en);
+      p.en.textContent = en;
+    }
+    stats.translated = todo.length;
+  } catch (e) {
+    if (lastStill?.result !== r) return;
+    for (const p of todo) { p.en.textContent = "Translation unavailable"; p.en.classList.add("error"); }
+    setStatus(e, true);
+  }
 }
 
 function toggleSheet(open = sheet.hidden) {
@@ -892,6 +1013,16 @@ async function live() {
   sizeCanvas(overlay);
   if (!stream) await startCamera();
   else await video.play(); // resuming after a freeze, which only paused the video
+  if (!settings.live) {
+    // Live reading off (settings): just the camera, and the shutter reads what it shows.
+    stopGate();
+    loopToken++;
+    livePlan = null;
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    overlay.style.transform = "";
+    setStatus("Tap the shutter to read");
+    return;
+  }
   setStatus("Loading models…");
   startGate();
   liveLoop(++loopToken);
@@ -1048,8 +1179,9 @@ async function readStill(src, w, h, fit, keep = false) {
     lastStill.result = r;
     lastStill.plan = layout(r, map);
     redrawStill(); // at whatever zoom the fingers have reached meanwhile
-    fillSheet(r);
+    stats.translated = 0;
     setStatus(timing(r));
+    translateParagraphs(r, fillSheet(r));
   } catch (e) {
     if (!e.cancelled) setStatus(e, true); // cancelled: a newer still read took over
   }
@@ -1093,6 +1225,7 @@ $("#go").onclick = async () => {
 };
 
 function setLang(l) {
+  if (translator?.lang !== l) dropTranslator(); // one translation model in memory at a time
   lang = l;
   try { localStorage.setItem("lang", l); } catch {}
   document.querySelectorAll("[data-lang]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.lang === l)));
@@ -1101,6 +1234,122 @@ function setLang(l) {
   if (mode === "still" && lastStill) readStill(lastStill.src, lastStill.w, lastStill.h, lastStill.fit);
 }
 document.querySelectorAll("[data-lang]").forEach((b) => (b.onclick = () => setLang(b.dataset.lang)));
+// The language bar shows the languages whose reading pack is installed.
+function showLangs() {
+  document.querySelectorAll("[data-lang]").forEach((b) => (b.hidden = !settings.packs[b.dataset.lang].read));
+}
+
+// ---------- settings ----------
+const NAMES = { zh: "中文 · Chinese", ja: "日本語 · Japanese", ko: "한국어 · Korean" };
+const KINDS = { read: "Reading", translate: "Translation to English" };
+const jobs = {}; // "ja.read": { loaded, total } while it downloads, { error } after a failure
+const panel = $("#settings");
+
+function renderSettings() {
+  if (panel.hidden) return;
+  packs().then(drawSettings, (e) => $("#settings-body").replaceChildren(`Language packs unavailable: ${e.message}`));
+}
+
+function drawSettings(all) {
+  const h3 = (text) => Object.assign(document.createElement("h3"), { textContent: text });
+  const group = (...rows) => { const g = document.createElement("div"); g.className = "group"; g.append(...rows); return g; };
+  const row = (key, title, sub, on, disabled, onchange) => {
+    const r = document.createElement("label");
+    r.className = "row";
+    const text = document.createElement("div");
+    const t = Object.assign(document.createElement("div"), { textContent: title });
+    const s = Object.assign(document.createElement("div"), { className: "sub", textContent: sub.text ?? sub });
+    if (sub.error) s.classList.add("error");
+    text.append(t, s);
+    const sw = Object.assign(document.createElement("input"), { type: "checkbox", className: "switch", checked: on, disabled });
+    sw.setAttribute("role", "switch");
+    sw.dataset.setting = key;
+    sw.onchange = () => onchange(sw.checked);
+    r.append(text, sw);
+    return r;
+  };
+  const packRow = (l, kind) => {
+    const job = jobs[`${l}.${kind}`], on = settings.packs[l][kind];
+    let sub = mb(bytes(all[l][kind]));
+    if (job?.error) sub = { text: `${sub} · failed: ${job.error}`, error: true };
+    else if (job) sub += job.total ? ` · downloading ${Math.floor((100 * job.loaded) / job.total)} %` : " · starting…";
+    else if (l === "zh" && kind === "read") sub += " · always installed";
+    else if (on) sub += " · installed";
+    const disabled = (l === "zh" && kind === "read") || (kind !== "read" && !settings.packs[l].read) || (job && !job.error);
+    return row(`${l}.${kind}`, KINDS[kind], sub, on || (job && !job.error), disabled, (v) => (v ? installPack(l, kind) : removePack(l, kind)));
+  };
+  const store = Object.assign(document.createElement("p"), { className: "note", textContent: "Storage used: …" });
+  usage().then((n) => (store.textContent = n == null ? "" : `This app uses ${mb(n)} on this device.`));
+  // iOS clears the storage of sites not visited for 7 days, but not of home-screen apps.
+  const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  const hint = ios && !navigator.standalone ? [Object.assign(document.createElement("p"), { className: "note",
+    textContent: "Add CJK Reader to your Home Screen (Share → Add to Home Screen) so Safari keeps the downloads." })] : [];
+  $("#settings-body").replaceChildren(
+    h3("Camera"),
+    group(row("live", "Live reading", settings.live ? "Readings follow the camera" : "Tap the shutter to read", settings.live, false, setLive)),
+    ...Object.keys(NAMES).flatMap((l) => [h3(NAMES[l]), group(...Object.keys(all[l]).map((k) => packRow(l, k)))]),
+    h3("Storage"), store, ...hint,
+  );
+}
+
+function setLive(on) {
+  settings.live = on;
+  saveSettings();
+  renderSettings();
+  if (mode === "live") live().catch((e) => setStatus(e, true));
+}
+
+// Download a pack (only the files not cached yet). Also run at launch for packs that are on but have
+// lost files: the browser cleared them, or sw.js started a new cache.
+async function installPack(l, kind) {
+  const key = `${l}.${kind}`;
+  if (jobs[key] && !jobs[key].error) return;
+  jobs[key] = { loaded: 0, total: 0 };
+  renderSettings();
+  try {
+    await install((await packs())[l][kind], (loaded, total) => { jobs[key] = { loaded, total }; renderSettings(); });
+    settings.packs[l][kind] = true;
+    saveSettings();
+    delete jobs[key];
+  } catch (e) {
+    jobs[key] = { error: e.message };
+  }
+  showLangs();
+  renderSettings();
+}
+
+async function removePack(l, kind) {
+  const kinds = kind === "read" ? Object.keys(settings.packs[l]) : [kind];
+  const what = kind === "read" ? `${NAMES[l]} (reading and translation)` : `${NAMES[l]} translation`;
+  if (!confirm(`Remove ${what} from this device? You can download it again here.`)) return renderSettings();
+  for (const k of kinds) settings.packs[l][k] = false;
+  saveSettings();
+  if (translator?.lang === l) dropTranslator();
+  if (kind === "read" && l === lang) setLang("zh");
+  showLangs();
+  renderSettings();
+  const all = await packs();
+  await remove(kinds.flatMap((k) => all[l][k] ?? []), await needed());
+  renderSettings();
+}
+
+// The paths still needed: the core files, and those of the packs on or downloading.
+async function needed() {
+  const all = await packs();
+  const on = Object.entries(settings.packs).flatMap(([l, p]) => Object.keys(all[l]).filter((k) => p[k] || (jobs[`${l}.${k}`] && !jobs[`${l}.${k}`].error)).map((k) => all[l][k]));
+  return new Set([...await core(), ...on.flat().map((f) => f.path)]);
+}
+
+async function restorePacks() {
+  const all = await packs();
+  for (const l in settings.packs)
+    for (const kind of Object.keys(all[l]))
+      if (settings.packs[l][kind] && (await missing(all[l][kind])).length) await installPack(l, kind);
+  await prune("models/translate/", await needed()); // a translator an update replaced
+}
+
+$("#gear").onclick = () => { panel.hidden = false; renderSettings(); };
+$("#settings-done").onclick = () => (panel.hidden = true);
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) { stopCamera(); stopGate(); loopToken++; }
@@ -1110,5 +1359,8 @@ addEventListener("resize", () => { if (mode === "still" && lastStill) readStill(
 
 if (!navigator.mediaDevices?.getUserMedia) $("#start-msg").textContent = "No camera access here (needs HTTPS). You can still open a photo.";
 showDev();
+showLangs();
 setLang(lang);
+// Once this language's own downloads are done (and stored by sw.js), put back any pack files missing.
+loaded[lang]?.then(() => setTimeout(() => restorePacks().catch(() => {}), 3000), () => {});
 inited.catch((e) => { if (!reloading) setStatus(`Model load failed: ${e.message}`, true); });

@@ -6,7 +6,8 @@
   "type": "module",
   "scripts": {
     "vendor": "node tools/vendor.mjs",
-    "test": "node test/ocr.test.mjs && node test/reading.test.cjs",
+    "packs": "node tools/make_packs.mjs",
+    "test": "node test/ocr.test.mjs && node test/reading.test.cjs && node test/translate.test.mjs",
     "serve": "python3 -m http.server -d docs 8080",
     "e2e": "node test/e2e.test.mjs"
   },

@@ -26,6 +26,8 @@ header { position: fixed; z-index: 2; top: 0; left: 0; right: 0; padding: calc(v
 .langs { display: flex; background: rgba(0,0,0,.5); border-radius: 999px; padding: 3px; }
 .langs button { border: 0; background: none; padding: 6px 14px; border-radius: 999px; font-size: 16px; }
 .langs button[aria-pressed="true"] { background: var(--accent); color: #111; font-weight: 600; }
+#gear { position: absolute; top: calc(var(--safe-t) + 10px); right: 12px; width: 40px; height: 40px; border-radius: 12px; }
+#gear svg { width: 24px; height: 24px; }
 #status { align-self: stretch; font-size: 12px; color: var(--muted); text-shadow: 0 1px 2px #000; min-height: 1.4em; text-align: center; }
 #status.error { color: #fca5a5; }
 #debug { margin: 0; font: 10px/1.35 ui-monospace, Menlo, monospace; color: #d4d4d8; background: rgba(0,0,0,.55);
@@ -46,7 +48,7 @@ body:not([data-mode="still"]) #list { visibility: hidden; }
 .shutter { width: 68px; height: 68px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,.25); }
 .shutter:active { transform: scale(.94); }
 body[data-mode="idle"] .shutter { visibility: hidden; }
-body[data-mode="still"] .shutter { background: var(--accent); border-color: var(--accent); color: #111; font-weight: 700; }
+body[data-mode="still"] .shutter { background: var(--accent); border-color: var(--accent); color: #111; font-size: 17px; font-weight: 800; }
 
 #zoombar { position: fixed; z-index: 2; left: 50%; bottom: calc(var(--safe-b) + 104px); transform: translateX(-50%);
   width: min(240px, 64vw); display: flex; flex-direction: column; align-items: stretch; gap: 0;
@@ -75,7 +77,9 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 .ruby { font-size: 24px; line-height: 2.1; word-break: break-all; }
 /* Padding: syllables wider than their character (chuàng) would otherwise run into the next one. */
 .ruby rt { font-size: 12px; color: var(--accent); letter-spacing: 0; padding: 0 .15em; }
-.roman { color: var(--muted); font-size: 14px; }
+.kana { color: var(--muted); font-size: 14px; }
+.en { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--accent); font-size: 15px; }
+.en.error { color: var(--muted); border-color: var(--muted); }
 
 #start { position: fixed; z-index: 1; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; padding: 24px; text-align: center; background: #0b0b0c; }
@@ -88,3 +92,28 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 #progress .bar { height: 6px; border-radius: 3px; background: rgba(255,255,255,.15); overflow: hidden; }
 #progress .bar i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s; }
 #start #progress p { margin-top: 6px; font-size: 12px; }
+
+/* Settings: a full-screen page over everything, grouped rows like iOS. */
+#settings { position: fixed; z-index: 4; inset: 0; overflow-y: auto; padding: calc(var(--safe-t) + 8px) 16px calc(var(--safe-b) + 24px);
+  background: #0b0b0c; }
+#settings[hidden] { display: none; }
+#settings .bar { display: flex; align-items: center; justify-content: space-between; margin: 4px 4px 8px; }
+#settings h2 { margin: 0; font-size: 22px; }
+#settings-done { border: 0; background: none; padding: 8px 0; color: var(--accent); font-size: 17px; font-weight: 600; }
+#settings h3 { margin: 20px 16px 6px; font-size: 13px; font-weight: 500; color: var(--muted); }
+#settings .group { border-radius: 12px; background: #1c1c1e; }
+#settings .row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 8px 16px; cursor: pointer; }
+#settings .row + .row { border-top: 1px solid rgba(255,255,255,.08); }
+#settings .row > div { flex: 1; min-width: 0; }
+#settings .sub { font-size: 13px; color: var(--muted); }
+#settings .sub.error { color: #fca5a5; }
+#settings .note { margin: 0 16px 8px; font-size: 13px; color: var(--muted); }
+
+/* On/off switch: an iOS-style track, yellow when on. */
+.switch { -webkit-appearance: none; appearance: none; flex: none; position: relative; width: 51px; height: 31px; margin: 0;
+  border-radius: 999px; background: rgba(120,120,128,.36); transition: background .2s; cursor: pointer; }
+.switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%;
+  background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,.3); transition: transform .2s; }
+.switch:checked { background: var(--accent); }
+.switch:checked::after { transform: translateX(20px); }
+.switch:disabled { opacity: .5; cursor: default; }

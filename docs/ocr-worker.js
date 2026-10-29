@@ -87,6 +87,9 @@ function toWasm(reason) {
   return rebuilding;
 }
 
+// One recogniser at a time: once another language's is ready, the old one's session is released (after
+// any read already queued with it) and its bytes dropped. Phones, iOS above all, end a page that holds
+// too much memory, and the translator wants its share after a snap.
 function engine(model) {
   engines[model] ??= (async () => {
     await ready;
@@ -95,6 +98,13 @@ function engine(model) {
       session(`rec_${model}.${opts.precision}.onnx`),
       fetch(new URL(`models/${DICT[model]}`, import.meta.url)).then((r) => r.text()),
     ]);
+    for (const m in engines) {
+      if (m === model) continue;
+      const old = engines[m];
+      delete engines[m];
+      delete models[`rec_${m}.${opts.precision}.onnx`];
+      old.then((e) => serial(() => e.rec.release()), () => {});
+    }
     return { det, rec, chars: dict.replace(/\n$/, "").split("\n") };
   })().catch((e) => { delete engines[model]; throw e; });
   return engines[model];

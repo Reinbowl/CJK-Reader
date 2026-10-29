@@ -2,26 +2,29 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-CJK Reader is an offline camera PWA. It runs OCR on Chinese, Japanese or Korean text and shows how to read it (pinyin, furigana and romaji, or Revised Romanization). Everything runs in the browser. The README covers model sizes, URL switches for performance testing, and known limitations.
+CJK Reader is an offline camera PWA. It runs OCR on Chinese, Japanese or Korean text and shows how to read it (pinyin, furigana and romaji, or Revised Romanization). After a snap it can also translate the text into English. Everything runs in the browser. The README covers model sizes, URL switches for performance testing, and known limitations.
 
 ## Commands
 
 ```sh
 npm ci                                  # JS deps (exact versions pinned in package.json)
 npm run vendor                          # wipe and rebuild docs/vendor from node_modules
-uv run tools/prepare_models.py [--fp32] # download pinned models, verify sha256, int8-quantize -> docs/models
-npm test                                # both Node test suites
+uv run tools/prepare_models.py [--fp32] # download pinned models, verify sha256, int8-quantize -> docs/models (+ translate/)
+npm run packs                           # docs/packs.json: each language pack's files, sizes, sha256 (after vendor + prepare_models)
+npm test                                # the three Node test suites
 node test/ocr.test.mjs [int8|fp32]      # OCR pipeline only (needs docs/models)
 node test/reading.test.cjs              # pinyin / romaji / Korean romanization only
+node test/translate.test.mjs            # marian.js: tokenizer ids vs test/marian_ref.json, sample translations
+uv run tools/marian_ref.py              # regenerate test/marian_ref.json (Hugging Face's MarianTokenizer)
 npm run e2e                             # Playwright, headless Chromium, fake camera (~1 min)
 E2E_WEBGPU=1 npm run e2e                # also a WebGPU scenario on SwiftShader (slow: ~10 s per read)
-E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, static, calendar, carton, stack, page, zoom, pan, tremor, wander, subtitles, gap, clock, webgpu)
+E2E_ONLY=pan,tremor npm run e2e         # some scenarios (download, settings, static, calendar, carton, stack, page, zoom, pan, tremor, wander, subtitles, gap, clock, webgpu)
 npm run serve                           # http://localhost:8080 (camera needs HTTPS or localhost)
 uv run tools/ocr_ref.py --json test/ref_int8.json   # regenerate the Python reference output
-uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page subs clock  # regenerate these test images
+uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page menu subs clock  # regenerate these test images
 ```
 
-**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar, carton, page, subs and clock scenes only need `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
+**Fonts:** `make_test_images.py` needs Noto CJK OTFs. The calendar, carton, page, menu, subs and clock scenes only need `NotoSansCJKsc-Regular.otf`, from github.com/notofonts/noto-cjk `Sans/OTF/SimplifiedChinese/`, saved in `.cache/fonts/` (gitignored). The sign scenes share one rng, so regenerating any of them needs all four fonts. `npm run e2e` also points Chromium's fontconfig at `.cache/fonts` when it exists, so screenshots show CJK text instead of tofu.
 
 **`npm run e2e`:**
 - Plays Y4M clips that `test/e2e.test.mjs` writes into `.cache/e2e/` (608×1080 portrait; the fake device crops anything taller to the 1080 px the app requests).
@@ -38,6 +41,8 @@ When does `ocr.test.mjs` fail? Only when an image's mean CER is over 0.1, a char
 ```
 app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-core.js + onnxruntime-web
                      ──rpc──► reading-worker.js (classic worker) → reading.js + pinyin-pro / wanakana / kuromoji
+                     ──rpc──► marian-worker.js (module worker) → marian.js + onnxruntime-web WASM (after a snap only)
+       └─ packs.js (language pack installer, reads packs.json)
 ```
 
 - **RPC:** `rpc()` in `app.js` matches replies by `id`. A worker message without an `id` is an event (download `progress`). A worker error comes back as `{id, error, where}`, where `where` is the `file.js:line` of the first stack frame, shown in the status bar because phones have no console.
@@ -80,6 +85,23 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Vertical lines get furigana-style labels to the right.
   - `layout()` returns a plan (box outlines, and per row its labels' positions plus what `rowItems()` needs to redo them). `paint()` draws a plan through a transform, and `draw()` = both, for live mode.
   - `cjkStats.labels` is what the e2e checks read: lines, labels, crowded, below, overlaps, `shrink` (smallest row size / size before placing), `deepest` (most of a line a row covers), hidden at this zoom, `drift` (furthest a label sits from its characters) and min/max size, the last two in on-screen px.
+- **Settings (`#settings`, the gear):** `localStorage.settings` = `{live, packs: {zh|ja|ko: {read, translate}}}`. `zh.read` is always on. Test builds of the branch had a `zh.lite` translator; a saved `lite` turns `translate` on and is dropped.
+  - `live` off: `live()` runs the camera without `startGate()`/`liveLoop()`; the shutter reads as usual.
+  - The language bar hides languages whose `read` pack is off. A launch with no saved settings counts the language in use as installed (users from before packs).
+  - Switches carry `data-setting="live"` / `"ja.read"` etc. for the e2e `settings` scene.
+- **Language packs (`packs.js`, `docs/packs.json`):** `tools/make_packs.mjs` lists each pack's files with size and sha256. Japanese reading is kuromoji only (it shares `rec_zhja`); each translation pack includes ORT's WASM build.
+  - `install()` fetches only the files missing from every cache, one at a time, with `cache: "no-store"`. `sw.js` passes no-store requests straight to the network. It checks size and sha256, then `cache.put()`s into `ASSETS` itself. A setting turns on only once every file is in.
+  - `remove()` deletes a pack's files except those `needed()` lists: `packs.json`'s `core` (ORT's runtime, which the OCR uses) and the files of packs that are on or downloading.
+  - `restorePacks()` ends with `prune("models/translate/", needed())`: cached translator files no pack lists any more (an update replaced that language's model) are deleted.
+  - `packs.js` names the `ASSETS` cache too (`CACHE`): keep the two in step. A bump empties the packs. `restorePacks()` downloads the missing files again after launch, for packs whose setting is on.
+  - Chinese reading still arrives via the first-launch `init` path (SW cache-first), not `install()`.
+- **Translation (`marian-worker.js`, `marian.js`):** OPUS-MT (zh, ko) and FuguMT (ja), Marian models exported to ONNX as an encoder and a decoder without a KV cache. `prepare_models.py` gives the decoder's output layer its own copy of the embedding (`untie()`: it read it through a Transpose, which `quantize_dynamic` can't see through, so it stayed fp32) and quantizes MatMuls and embeddings to int8. It also writes `tokenizer.json` from the SentencePiece model (`marian_tokenizer()`, a small protobuf reader: no sentencepiece dependency).
+  - `marian.js` is pure (takes `ort`), like `ocr-core.js`. The tokenizer is SentencePiece unigram: NFKC, ▁ for spaces, Viterbi; an unknown character keeps its text and is looked up in the vocabulary (Marian's vocabulary has characters its source pieces lack). `translate.test.mjs` checks the ids equal MarianTokenizer's for every truth.json line.
+  - Greedy decoding, masking `<pad>`, up to `2 × input + 10` tokens; a paragraph is split into sentences first. The worker uses ORT's plain WASM build with one thread, so each translation pack includes it (`vendor/ort/ort.wasm.min.mjs` and `ort-wasm-simd-threaded.{mjs,wasm}`).
+  - Memory (WASM heap after translating): FuguMT ~230 MB, OPUS-MT ~350 MB. Don't bring back Firefox's Bergamot engine: it was tried and dropped, at ~740 MB after its first translation (it expands the model into float copies) it crashed iPhones.
+  - `readStill()` → `fillSheet()` returns paragraphs (`paragraphs()`: same size within 15 %, under a line height apart, overlapping sideways, and the line above looks wrapped: `WRAP_MIN` characters, reaching the next one's right end, not ending in a price; vertical lines alone. The e2e `settings` scene checks the page joins and `menu.png` doesn't) → `translateParagraphs()`. zh/ja lines join with no space, ko with one. Paragraphs without CJK are skipped. `marian.js` translates a paragraph a sentence at a time.
+  - `translatorFor(lang)` makes one worker per language. `setLang()` and removing the pack terminate it. `translations` remembers 500 results by `lang\ntext`. `cjkStats.translated` counts paragraphs.
+- **Memory:** `ocr-worker.js` `engine()` releases the other language's recognizer session (through `serial()`) once the new one is ready, and drops its bytes. It's rebuilt from the cache if that language comes back.
 - **`reading.js`** must stay a classic IIFE script. kuromoji is UMD-only, so the reading worker is a classic worker that uses `importScripts`. The Node test `require()`s the same file. It reads `pinyinPro`, `wanakana` and `kuromoji` as globals and exposes `Reading.{zh,ja,ko,initJapanese}`. kuromoji and its 18 MB dictionary load only when Japanese is picked.
 - **Position contract between the two halves:** each OCR line has `chars: [{c, x, y}]`, one entry per code point of `text`. Each reading unit `{i, n, parts, roman}` indexes code points of that same text, and `app.js` places a label at `line.chars.slice(u.i, u.i + u.n)`. So reading code must keep the code-point count unchanged. `fixDash` (ー→一) swaps one character for one character.
 - **One read at a time:** every session run and creation in `ocr-worker.js` goes through `serial()`.
@@ -98,5 +120,6 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Two caches:
     - `SHELL`: app code, network-first with `no-cache`.
     - `ASSETS`: anything under `/models/` or `/vendor/`, cache-first. A miss is stored with `event.waitUntil` while it streams to the page. Awaiting `cache.put()` first would hold back every byte until the download finished, which breaks the progress bar.
-  - **Bump `ASSETS` whenever model or vendor files change**, or installed apps keep the old ones.
+  - **Bump `ASSETS` (and `CACHE` in `packs.js`) whenever model or vendor files change**, or installed apps keep the old ones. Adding new files needs no bump.
+  - A `cache: "no-store"` request bypasses both caches (the pack installer caches what it has verified).
   - A new top-level app file also needs adding to `SHELL_FILES`.

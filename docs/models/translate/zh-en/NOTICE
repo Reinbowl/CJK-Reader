@@ -1,0 +1,3 @@
+OPUS-MT zh-en by the Language Technology Research Group at the University of Helsinki,
+https://huggingface.co/Helsinki-NLP/opus-mt-zh-en, CC BY 4.0.
+ONNX export: https://huggingface.co/Xenova/opus-mt-zh-en. int8-quantized by tools/prepare_models.py.

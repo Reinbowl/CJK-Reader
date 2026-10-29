@@ -1,16 +1,27 @@
 # [CJK Reader](https://reinbowl.github.io/CJK-Reader/)
 
 A PWA that points the phone camera at Chinese, Japanese or Korean text and shows how to read it:
-pinyin for Chinese, furigana and romaji for Japanese, Revised Romanization for Korean. It reads
-the text, it doesn't translate it. Everything runs on the device, and it works offline after the
-first visit.
+pinyin for Chinese, furigana and romaji for Japanese, Revised Romanization for Korean. After a snap
+it can also translate the text into English. Everything runs on the device, and it works offline
+after the first visit.
 
 - **Live:** readings float above each line of text in the camera view. It reads when the camera
   is held steady on something new, or when the text in view changes (subtitles). While nothing
   changes it only runs the text detector now and then to check, not the full read.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
-  it. The list button shows every line with ruby text, one item per line of text in the picture,
-  and for Japanese the romaji under each line.
+  it. The list button shows every line with ruby text, one item per paragraph (lines that belong
+  together). For Japanese that's romaji over each word, like the camera, and the kana reading under the line.
+- **Translation:** with a language's translation pack installed, each paragraph of a frozen frame or
+  photo is translated into English and shown under it in the list. Never in live mode. It runs on
+  the CPU in its own worker, with small Marian models on ONNX Runtime: OPUS-MT for Chinese and
+  Korean, FuguMT for Japanese.
+- **Settings** (the gear at the top right):
+  - **Live reading** can be turned off. The app is then a plain camera, and the shutter reads.
+  - **Language packs:** Reading and Translation switches for each language, with their sizes. The
+    total storage used is shown at the bottom. Chinese reading is always installed. Japanese and
+    Korean appear in the language bar once their reading pack is installed. A pack counts as
+    installed only after every file has downloaded and matched its sha256. An interrupted download
+    resumes with the files still missing.
 - **Photo:** reads a picture from the library instead of the camera.
 - **Zoom:**
   - Live mode: pinch, or use the slider above the shutter. At rest the slider is just a thin line;
@@ -35,6 +46,8 @@ camera frame ──► ocr-worker.js (module worker)
              ──► reading-worker.js (classic worker)
                    reading.js: pinyin-pro (zh) · kuromoji + wanakana (ja) · RR rules (ko)
              ──► app.js draws each reading over its characters
+after a snap ──► marian-worker.js (module worker)
+                   marian.js on onnxruntime-web (WASM), zh/ja/ko → English, a paragraph at a time
 ```
 
 Live mode doesn't read every frame:
@@ -120,27 +133,49 @@ accurate than tiny but about 4× the size and slower.
 than fp32 (9.8 MB vs 36.3 MB), and the character error rate on the test images stays within 0.015
 of fp32. Compute stays float32, so the same files run on the WASM and WebGPU backends.
 
-Downloads are lazy and cached by the service worker. On the first visit, the runtime, the
-detector and the current language's recognizer download together behind one progress bar on the
-start screen. If the camera starts before they're done, the status line carries on with the
-percentage. The Japanese dictionary gets its own bar the first time 日本語 is picked.
+Downloads are cached by the service worker. On the first visit, the runtime, the detector and the
+Chinese recognizer download together behind one progress bar on the start screen. If the camera
+starts before they're done, the status line carries on with the percentage. Everything else is a
+language pack, downloaded from Settings (`docs/packs.json` lists each pack's files, sizes and
+sha256):
 
-- Core app: ~1 MB
-- ONNX Runtime: 27 MB for the WebGPU build, on a device with WebGPU; otherwise the WASM build,
-  14 MB
-- Detector + current language's recognizer: 4–6 MB
-- Japanese dictionary (kuromoji): 18 MB, only when 日本語 is picked
+| Pack | Files | Size |
+|---|---|---|
+| Chinese reading (always) | detector, `rec_zhja`, its dictionary | 6.3 MB |
+| Japanese reading | kuromoji dictionary (the recognizer is Chinese's) | 18 MB |
+| Korean reading | `rec_ko`, its dictionary | 3.6 MB |
+| Chinese translation | OPUS-MT int8: encoder 53 MB, decoder 93 MB, tokenizer 1.5 MB, plus ONNX Runtime's 14 MB WASM build | 162 MB |
+| Japanese translation | FuguMT int8: encoder 36 MB, decoder 59 MB, tokenizer 1 MB, plus the same WASM build | 110 MB |
+| Korean translation | OPUS-MT int8: encoder 53 MB, decoder 93 MB, tokenizer 1.7 MB, plus the same WASM build | 162 MB |
+
+On top of these: the core app (~1 MB) and ONNX Runtime, either the 27 MB WebGPU build on a
+device with WebGPU or the 14 MB WASM build otherwise.
+
+After the first pack, the app asks the browser for persistent storage. Safari clears the storage
+of sites not visited for 7 days, but not of home-screen apps, so on an iPhone, Settings suggests
+Add to Home Screen. A pack that's on but has lost files (cleared by the browser, or a new `ASSETS`
+cache) downloads them again in the background after launch.
+
+Only one recognizer and one translation model are loaded at a time. Switching language releases
+the other recognizer and ends the translation worker, because phones (iOS above all) end a page
+that holds too much memory. A translator needs about 230 MB of WASM memory (FuguMT) or 350 MB
+(OPUS-MT). Firefox's translation engine (Bergamot) was tried first and dropped: it needs about
+740 MB once it has translated, and crashed iPhones.
 
 ## Layout
 
 ```
 docs/                 ← the site (GitHub Pages serves this folder)
   index.html app.js style.css sw.js manifest.webmanifest icons/
-  ocr-core.js ocr-worker.js reading.js reading-worker.js
-  models/             ← generated by tools/prepare_models.py
+  ocr-core.js ocr-worker.js reading.js reading-worker.js marian.js marian-worker.js
+  packs.js            language pack installer (download, sha256 check, cache, remove)
+  packs.json          ← generated by tools/make_packs.mjs: each pack's files, sizes, sha256
+  models/             ← generated by tools/prepare_models.py (translate/: Marian ONNX zh/ja/ko)
   vendor/             ← copied from node_modules by tools/vendor.mjs
 tools/
   prepare_models.py   download pinned models, verify sha256, int8-quantize → docs/models
+  make_packs.mjs      write docs/packs.json from docs/models and docs/vendor
+  marian_ref.py       token ids from Hugging Face's MarianTokenizer → test/marian_ref.json
   ocr_ref.py          reference pipeline in Python (PaddleOCR's own pre/post-processing), fp32 vs int8 eval
   make_test_images.py render test/images (signs, a calendar page, a carton, a book page) from Noto CJK fonts
   make_icons.py       render docs/icons
@@ -148,6 +183,7 @@ tools/
 test/
   ocr.test.mjs        runs docs/ocr-core.js on test/images via onnxruntime-web, compares with Python
   reading.test.cjs    pinyin / romaji / Korean romanization cases
+  translate.test.mjs  docs/marian.js: tokenizer ids as MarianTokenizer, sample sentences into English
   e2e.test.mjs        Playwright + headless Chromium with a fake camera fed from test/images
 ```
 
@@ -157,7 +193,8 @@ test/
 npm ci                                  # JS deps (versions pinned)
 npm run vendor                          # → docs/vendor
 uv run tools/prepare_models.py          # → docs/models (add --fp32 to also keep float32 copies)
-npm test                                # OCR pipeline + reading tests
+npm run packs                           # → docs/packs.json (after the two above)
+npm test                                # OCR pipeline, reading and translation tests
 npm run e2e                             # the app in headless Chromium (screenshots in .cache/e2e/)
 npm run serve                           # http://localhost:8080 (localhost counts as secure for the camera)
 ```
@@ -170,7 +207,8 @@ The site needs HTTPS for the camera. `localhost` is fine, and on a phone use the
 Commit everything, including `docs/models` and `docs/vendor`. Then go to **Settings → Pages →
 Deploy from a branch → `main` / `/docs`**.
 
-- **File sizes:** the largest file is ~27 MB, well under GitHub's 100 MB limit.
+- **File sizes:** the largest file is a 93 MB translation decoder, under GitHub's 100 MB limit. The
+  site is about 470 MB in all, including ~370 MB of translation models.
 - **Headers:** GitHub Pages can't send the COOP/COEP headers that multithreaded WASM needs, so
   `sw.js` adds them. On first visit the page reloads once to pick them up. On WASM, the status bar
   shows `wasm×4` when threads are working.
@@ -233,6 +271,15 @@ padding.
   needs a dictionary (서울역 shows "seouryeok"; official RR is "Seoullyeok").
 - **Chinese readings:** pinyin-pro picks readings for characters with more than one from context,
   and applies the tone changes for 一 and 不 (yí gè, bú duì).
+- **Translation** works a paragraph at a time. A paragraph is lines of about the same size, less than
+  a line height apart, that overlap sideways, where each line but the last looks wrapped: 6 characters
+  or more, running to the end of the next line, not ending in a number. So a menu or a list of answers
+  is translated a line at a time. Columns side by side, a caption right under a heading of the same
+  size, or a list of long items the same length can still end up joined or split wrongly. Lines that are only English or
+  numbers aren't translated. The models are small (int8, greedy decoding), so expect plain,
+  sometimes literal English. Traditional Chinese goes through the Simplified Chinese model.
+  Japanese written all in kana, as in beginners' quizzes (つくえに はなが), isn't translated: the
+  models learnt from text with kanji.
 - **Picking a language:** you choose the language yourself. The Chinese/Japanese model doesn't
   read Hangul, and kanji-only text can't tell Chinese from Japanese.
 - **ー vs 一:** the recognizer sometimes reads 一 (one) as ー (long-vowel mark). `reading.js` fixes
@@ -255,3 +302,8 @@ padding.
 - **pinyin-pro:** MIT.
 - **wanakana:** MIT.
 - **kuromoji.js:** Apache-2.0. Its dictionary is IPADIC; see `docs/vendor/kuromoji/NOTICE.md`.
+- **FuguMT ja-en** (Satoshi Takahashi): CC BY-SA 4.0, ONNX export `Kadonox/fugumt-ja-en-onnx`.
+  **OPUS-MT ko-en** (University of Helsinki): Apache-2.0, ONNX export `Xenova/opus-mt-ko-en`.
+  **OPUS-MT zh-en** (University of Helsinki): CC BY 4.0, ONNX export `Xenova/opus-mt-zh-en`. All
+  pinned to commits in `tools/prepare_models.py` and int8-quantized there; credits in each
+  `docs/models/translate/<pair>/NOTICE`.

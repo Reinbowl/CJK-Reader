@@ -136,13 +136,20 @@ const pieceErr = (got, want) => (lev(got, want) - Math.max(0, [...want].length -
 
 // Most scenes pin WASM: headless Chromium has no GPU adapter, so the default (WebGPU) would only ever
 // take its fallback. The download and calendar scenes run the default.
-async function open(clip, query = "?ep=wasm", extraArgs = []) {
+// installed: language packs the settings panel would have on, as if downloaded before (["ja"]).
+async function open(clip, query = "?ep=wasm", extraArgs = [], installed = []) {
   const browser = await chromium.launch({
     args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream", `--use-file-for-fake-video-capture=${clip}`, ...extraArgs],
     env: { ...process.env, ...fontconfig },
   });
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 3, isMobile: true, hasTouch: true });
   await context.grantPermissions(["camera"]);
+  if (installed.length) {
+    await context.addInitScript((langs) => {
+      if (!localStorage.getItem("settings"))
+        localStorage.setItem("settings", JSON.stringify({ live: true, packs: Object.fromEntries(langs.map((l) => [l, { read: true }])) }));
+    }, installed);
+  }
   const page = await context.newPage();
   const errors = [];
   page.on("pageerror", (e) => errors.push(String(e)));
@@ -192,7 +199,7 @@ async function startLive(page) {
 // ---------- scenarios ----------
 async function staticScene() {
   console.log("-- static sign: one read, then idle");
-  const { browser, page, errors } = await open(clips.static);
+  const { browser, page, errors } = await open(clips.static, undefined, [], ["ja", "ko"]);
   const t0 = await startLive(page);
   const first = await stats(page);
   const lines = first.lines;
@@ -214,6 +221,12 @@ async function staticScene() {
   check(true, "switching language re-reads the unchanged view");
   await page.click('[data-lang="zh"]');
   await until(page, (n) => self.cjkStats.reads > n + 1 && self.cjkStats.gate === "idle", later.reads);
+  // Korean has its own recogniser; the Chinese one is released meanwhile and rebuilt on the way back.
+  await page.click('[data-lang="ko"]');
+  await until(page, (n) => self.cjkStats.reads > n + 2 && self.cjkStats.gate === "idle", later.reads);
+  await page.click('[data-lang="zh"]');
+  await until(page, (n) => self.cjkStats.reads > n + 3 && self.cjkStats.gate === "idle" && self.cjkStats.lines >= 4, later.reads);
+  check(true, "switching to Korean and back reads again in Chinese");
   const back = await stats(page);
 
   // Shutter: still mode reads the frozen frame and lists the lines.
@@ -235,7 +248,7 @@ async function staticScene() {
   await shot(page, "static-still");
   await page.tap("#list");
   check(!(await sheetHidden()), "list button opens the list");
-  const roman = await page.evaluate(() => document.querySelectorAll("#lines .roman").length);
+  const roman = await page.evaluate(() => document.querySelectorAll("#lines .kana").length);
   check(roman === 0, "the Chinese list shows pinyin only as ruby, not again underneath");
   await shot(page, "static-still-list");
   await page.tap("#sheet");
@@ -250,7 +263,7 @@ async function staticScene() {
   await page.setInputFiles("#file", join(root, "test/images/ja.png"));
   await until(page, (n) => self.cjkStats.mode === "still" && self.cjkStats.reads > n, before);
   await page.tap("#list");
-  const ja = await page.evaluate(() => document.querySelector("#lines").innerText);
+  const ja = await page.evaluate(() => [...document.querySelectorAll("#lines .ruby rt")].map((e) => e.textContent).join(" "));
   check(ja.includes("tōkyō eki wa kochira desu"), "photo read in Japanese with romaji");
   await shot(page, "photo-ja");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
@@ -285,7 +298,7 @@ async function calendarScene() {
   const t = await stats(page);
   console.log(`    still read: ${t.lines} lines, ${t.skipped} small, det ${t.ms.det.toFixed(0)} ms rec ${t.ms.rec.toFixed(0)} ms`);
   check(t.skipped === 0 && t.lines >= s.lines, "still mode skips nothing");
-  const withReading = await page.evaluate(() => document.querySelectorAll("#lines li:has(rt)").length);
+  const withReading = await page.evaluate(() => document.querySelectorAll("#lines .ruby:has(rt)").length);
   console.log(`    labels: ${JSON.stringify(t.labels)}`);
   check(t.labels.lines === withReading && t.labels.overlaps === 0, `every line with a reading is labelled (${t.labels.lines}/${withReading}), none overlapping`);
   await shot(page, "calendar-still");
@@ -437,7 +450,7 @@ async function webgpuScene() {
 
 async function cartonScene() {
   console.log("-- stacked headlines (photo): readings keep their size, further onto the line when there's no gap");
-  const { browser, page, errors } = await open(clips.static);
+  const { browser, page, errors } = await open(clips.static, undefined, [], ["ja"]);
   await page.click('[data-lang="ja"]');
   await page.setInputFiles("#file", join(root, "test/images/carton.png"));
   await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads >= 1, null, 120000);
@@ -564,7 +577,8 @@ async function downloadScene() {
   console.log("-- first visit on a slow connection: one progress bar, start early, no errors");
   throttle = true;
   const { browser, page, errors } = await open(clips.static, "");
-  await until(page, () => self.cjkStats.download && !self.cjkStats.download.done);
+  // The files report their sizes as their downloads start, so the total grows for a moment at first.
+  await until(page, () => self.cjkStats.download && !self.cjkStats.download.done && /\/ (1[5-9]|2\d)\.\d MB/.test(document.querySelector("#progress p").textContent));
   const first = await page.evaluate(() => ({ text: document.querySelector("#progress p").textContent, pct: self.cjkStats.download.pct }));
   await page.waitForTimeout(1000);
   const later = await page.evaluate(() => self.cjkStats.download.pct);
@@ -591,8 +605,130 @@ async function downloadScene() {
   await browser.close();
 }
 
+async function settingsScene() {
+  console.log("-- settings: language packs downloaded, checked and removed");
+  const { browser, page, errors } = await open(clips.static);
+  page.on("dialog", (d) => d.accept());
+  const langs = () => page.evaluate(() => [...document.querySelectorAll("[data-lang]")].filter((b) => !b.hidden).map((b) => b.dataset.lang).join());
+  // "cached/all" files of a pack ("ja.read"), and waiting for a count.
+  const count = async (pack) => {
+    const { packs } = await (await fetch("packs.json")).json();
+    const files = packs[pack.split(".")[0]][pack.split(".")[1]];
+    return (await Promise.all(files.map((f) => caches.match(new URL(f.path, location.href).href)))).filter(Boolean).length + "/" + files.length;
+  };
+  const cached = (pack) => page.evaluate(`(${count})(${JSON.stringify(pack)})`);
+  const cachedUntil = async (pack, want) => {
+    for (const end = Date.now() + 30000; Date.now() < end; await page.waitForTimeout(200)) if ((await cached(pack)) === want) return true;
+    return false;
+  };
+  // sw.js stores the Chinese models once the reader has them.
+  check(await cachedUntil("zh.read", "3/3"), "the Chinese models are cached by the service worker");
+  check((await langs()) === "zh", "at first only Chinese is in the language bar");
+  await page.click("#gear");
+  check(await page.isChecked('[data-setting="zh.read"]') && await page.isDisabled('[data-setting="zh.read"]'), "Chinese reading is always on");
+  check(await page.isDisabled('[data-setting="ja.translate"]'), "translation waits for its language's reading pack");
+  await shot(page, "settings");
+  await page.click('[data-setting="ja.read"]');
+  await until(page, () => JSON.parse(localStorage.getItem("settings")).packs.ja.read);
+  check((await cached("ja.read")) === "13/13", `the Japanese reading pack is cached (${await cached("ja.read")} files)`);
+  check(/installed/.test(await page.textContent('#settings .row:has([data-setting="ja.read"])')), "and shows as installed");
+  check((await langs()) === "zh,ja", "日本語 joins the language bar");
+  await shot(page, "settings-ja");
+  await page.click('[data-setting="ja.read"]');
+  await until(page, () => !JSON.parse(localStorage.getItem("settings")).packs.ja.read);
+  check(await cachedUntil("ja.read", "0/13"), "removing it deletes its files");
+  const zhLeft = await cached("zh.read");
+  check(zhLeft === "3/3", `but not Chinese's (${zhLeft})`);
+  check((await langs()) === "zh", "and 日本語 leaves the language bar");
+
+  // Live reading off: a plain camera, and the shutter reads.
+  await page.click('[data-setting="live"]');
+  await page.click("#settings-done");
+  await page.click("#go");
+  await page.waitForTimeout(2500);
+  const snapOnly = await stats(page);
+  check(snapOnly.mode === "live" && snapOnly.reads === 0 && snapOnly.probes === 0, `live reading off: the camera runs without reads (${snapOnly.reads} reads, ${snapOnly.probes} checks)`);
+  check(/shutter/.test(await page.textContent("#status")), "and the status line says to tap the shutter");
+  await page.click("#shutter");
+  await until(page, () => self.cjkStats.mode === "still" && self.cjkStats.reads === 1 && self.cjkStats.lines >= 4);
+  check(true, "the shutter reads the frozen frame");
+  await page.click("#shutter");
+  await page.click("#gear");
+  await page.click('[data-setting="live"]');
+  await page.click("#settings-done");
+  await until(page, () => self.cjkStats.mode === "live" && self.cjkStats.reads >= 2);
+  check(true, "turning it back on reads live again");
+
+  // Translation: after a snap only, a paragraph at a time, in the list.
+  check((await stats(page)).translated === 0, "nothing is translated live");
+  await page.click("#gear");
+  await page.click('[data-setting="zh.translate"]');
+  await until(page, () => JSON.parse(localStorage.getItem("settings")).packs.zh.translate, null, 120000);
+  check((await cached("zh.translate")) === "6/6", "the Chinese translation pack is cached (encoder, decoder, tokenizer, ORT's WASM)");
+  await page.click("#settings-done");
+  const n = (await stats(page)).reads;
+  await page.setInputFiles("#file", join(root, "test/images/page.png"));
+  await until(page, () => self.cjkStats.translated > 0, null, 120000);
+  const tr = await page.evaluate(() => ({
+    lines: self.cjkStats.lines, translated: self.cjkStats.translated,
+    en: [...document.querySelectorAll("#lines .en")].filter((e) => !e.hidden).map((e) => e.textContent),
+  }));
+  console.log(`    ${tr.lines} lines, ${tr.translated} paragraphs: ${tr.en.join(" | ")}`);
+  check((await stats(page)).reads === n + 1, "the photo is read once");
+  check(tr.translated === 2, `the title and the wrapped body are translated as 2 paragraphs (${tr.translated})`);
+  check(tr.en.every((t) => /^[\x20-\x7e’“”—–]+$/.test(t) && t.length > 5) && /read/i.test(tr.en.join(" ")), "in English");
+  await page.tap("#list");
+  await shot(page, "translate-list");
+  // A menu: dishes and prices are lists, not wrapped text, so every line is translated on its own.
+  await page.tap("#list");
+  await page.setInputFiles("#file", join(root, "test/images/menu.png"));
+  await until(page, (want) => self.cjkStats.reads === want && self.cjkStats.translated > 0, n + 2, 120000);
+  const menu = await page.evaluate(() => ({
+    lines: self.cjkStats.lines, items: document.querySelectorAll("#lines li").length, translated: self.cjkStats.translated,
+    en: [...document.querySelectorAll("#lines .en")].filter((e) => !e.hidden).map((e) => e.textContent),
+  }));
+  console.log(`    menu: ${menu.lines} lines, ${menu.items} items: ${menu.en.slice(0, 6).join(" | ")} …`);
+  check(menu.lines >= 20 && menu.items === menu.lines && menu.translated === menu.lines, "a menu is translated a line at a time, not as one run-on paragraph");
+
+  // Japanese translates with FuguMT on onnxruntime (marian-worker.js).
+  await page.click("#gear");
+  await page.click('[data-setting="ja.read"]');
+  await until(page, () => JSON.parse(localStorage.getItem("settings")).packs.ja.read, null, 120000);
+  await page.click('[data-setting="ja.translate"]');
+  await until(page, () => JSON.parse(localStorage.getItem("settings")).packs.ja.translate, null, 120000);
+  check((await cached("ja.translate")) === "6/6", "the Japanese translation pack is cached (encoder, decoder, tokenizer, ORT's WASM)");
+  await page.click("#settings-done");
+  await page.click('[data-lang="ja"]');
+  await page.setInputFiles("#file", join(root, "test/images/ja.png"));
+  await until(page, () => [...document.querySelectorAll("#lines .en")].some((e) => /Tokyo/i.test(e.textContent)), null, 120000);
+  const ja = await page.evaluate(() => [...document.querySelectorAll("#lines .en")].filter((e) => !e.hidden).map((e) => e.textContent));
+  console.log(`    ja: ${ja.join(" | ")}`);
+  check(ja.length >= 4 && ja.every((t) => /^[\x20-\x7e’“”—–]+$/.test(t)), "Japanese is translated into English");
+  const jaList = await page.evaluate(() => ({
+    rt: [...document.querySelectorAll("#lines .ruby rt")].map((e) => e.textContent),
+    kana: [...document.querySelectorAll("#lines .kana")].map((e) => e.textContent),
+  }));
+  console.log(`    ja list: ${jaList.rt.join(" ")} / ${jaList.kana.join(" | ")}`);
+  check(jaList.rt.some((t) => /^t[oō]+ky[oō]+$/i.test(t)) && jaList.rt.every((t) => /^[\x20-\x7e\u00c0-\u017f']+$/.test(t)), "the Japanese list has romaji over each word, like the camera");
+  check(jaList.kana.some((t) => /とうきょう/.test(t)), "and the kana reading underneath");
+  await page.tap("#list");
+  await shot(page, "ja-list");
+  await page.tap("#list");
+
+  // A test build's "lite" Chinese translator is the Chinese translator now.
+  await page.evaluate(() => localStorage.setItem("settings", JSON.stringify({ live: true, packs: { zh: { read: true, translate: false, lite: true } } })));
+  await page.reload();
+  await until(page, () => document.querySelector("#gear"));
+  const migrated = await page.evaluate(() => JSON.parse(localStorage.getItem("settings")).packs.zh);
+  check(migrated.translate === true && !("lite" in migrated), `a saved lite setting turns Chinese translation on (${JSON.stringify(migrated)})`);
+  await page.click("#gear");
+  check(await page.isChecked('[data-setting="zh.translate"]') && !(await page.$('[data-setting="zh.lite"]')), "and Settings show one Chinese translator, on");
+  check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
+  await browser.close();
+}
+
 // E2E_ONLY=static,pan runs just those; webgpu only runs when asked for (E2E_WEBGPU=1 or E2E_ONLY).
-const scenes = { webgpu: webgpuScene, download: downloadScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene, subtitles: subtitleScene, gap: gapScene, clock: clockScene };
+const scenes = { webgpu: webgpuScene, download: downloadScene, settings: settingsScene, static: staticScene, calendar: calendarScene, carton: cartonScene, stack: stackScene, page: pageScene, zoom: zoomScene, pan: panScene, tremor: tremorScene, wander: wanderScene, subtitles: subtitleScene, gap: gapScene, clock: clockScene };
 const only = process.env.E2E_ONLY?.split(",");
 try {
   for (const [name, scene] of Object.entries(scenes)) {

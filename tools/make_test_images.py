@@ -1,7 +1,7 @@
 """Render synthetic sign/label photos with known text for checking the OCR pipeline.
 
     uv run tools/make_test_images.py --fonts /path/to/noto-cjk-otfs
-    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page subs clock   # just these
+    uv run tools/make_test_images.py --fonts .cache/fonts --scenes calendar carton page menu subs clock   # just these
 
 Writes test/images/*.png and test/images/truth.json (entries for scenes not rendered are kept).
 """
@@ -146,6 +146,27 @@ def render_page(font_path, rng, size=(1100, 560)):
     return img.filter(ImageFilter.GaussianBlur(0.6)), [PAGE_TITLE] + [t for _, t in lines]
 
 
+# A menu: dishes stacked with tight leading and a price at the far right of each, so the detector
+# reads names and prices as separate lines. Each dish is its own paragraph, not one run-on name.
+MENU_TITLE = "凉菜篇"
+MENU = [("川北凉粉", 8), ("酸辣蕨根粉", 10), ("干炸小黄鱼", 12), ("凉拌苦瓜", 10), ("拌金针菇", 10), ("口水鸡", 20),
+        ("夫妻肺片", 20), ("凉拌海带丝", 8), ("小葱拌豆腐", 8), ("红油耳丝", 20)]
+
+
+def render_menu(font_path, rng, size=(640, 760)):
+    w, h = size
+    base = np.full((h, w, 3), (240, 170, 60), np.uint8)
+    img = Image.fromarray(np.clip(base + rng.normal(0, 4, base.shape), 0, 255).astype(np.uint8))
+    d = ImageDraw.Draw(img)
+    d.text((w // 2, 70), MENU_TITLE, font=ImageFont.truetype(str(font_path), 64), fill=(200, 30, 30), anchor="mm")
+    font, ink = ImageFont.truetype(str(font_path), 40), (25, 20, 15)
+    for i, (dish, price) in enumerate(MENU):
+        y = 140 + i * 58
+        d.text((70, y), dish, font=font, fill=ink)
+        d.text((w - 70, y), f"{price}元", font=font, fill=ink, anchor="ra")
+    return img.filter(ImageFilter.GaussianBlur(0.6)), [MENU_TITLE] + [s for dish, price in MENU for s in (dish, f"{price}元")]
+
+
 # A video frame: a title of three lines stacked with almost no gap, and a subtitle at the bottom.
 # subs_a and subs_b differ only in the subtitle, like two moments of the same video (subs_gap has
 # none); clock_a and clock_b only in a clock in the middle of the picture, away from the Chinese.
@@ -177,7 +198,7 @@ def main():
     ap.add_argument("--scenes", nargs="*", help="only render these (default: all)")
     args = ap.parse_args()
     OUT.mkdir(parents=True, exist_ok=True)
-    want = set(args.scenes or [*SCENES, "calendar", "carton", "page", "subs", "clock"])
+    want = set(args.scenes or [*SCENES, "calendar", "carton", "page", "menu", "subs", "clock"])
     rng = np.random.default_rng(7)
     random.seed(7)
     truth_path = OUT / "truth.json"
@@ -201,6 +222,10 @@ def main():
         img, lines = render_page(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(17))
         img.save(OUT / "page.png")
         truth["page"] = {"lang": "zh", "lines": lines}
+    if "menu" in want:
+        img, lines = render_menu(args.fonts / "NotoSansCJKsc-Regular.otf", np.random.default_rng(23))
+        img.save(OUT / "menu.png")
+        truth["menu"] = {"lang": "zh", "lines": lines}
     if "subs" in want:
         for name, subtitle in SUBS.items():
             img, lines = render_subs(args.fonts / "NotoSansCJKsc-Regular.otf", subtitle)

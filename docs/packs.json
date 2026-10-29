@@ -1,0 +1,66 @@
+{
+ "core": [
+  "vendor/ort/ort-wasm-simd-threaded.asyncify.mjs",
+  "vendor/ort/ort-wasm-simd-threaded.asyncify.wasm",
+  "vendor/ort/ort-wasm-simd-threaded.mjs",
+  "vendor/ort/ort-wasm-simd-threaded.wasm",
+  "vendor/ort/ort.wasm.min.mjs",
+  "vendor/ort/ort.webgpu.min.mjs"
+ ],
+ "packs": {
+  "zh": {
+   "read": [
+    { "path": "models/det.int8.onnx", "size": 553026, "sha256": "f972ee810a1201d37ad78adf76fa0f92e30c00bb16fafdc340da0557edc017bc" },
+    { "path": "models/rec_zhja.int8.onnx", "size": 5637832, "sha256": "f5ff667a89e0a8bcf78e437d1c5ba7d4a4529ebef13469bd32759d31570fd7a0" },
+    { "path": "models/dict_zhja.txt", "size": 74947, "sha256": "b5f2bfe2bdd9448429e3e82b51c789775d9b42f2403d082b00662eb77e401c5d" }
+   ],
+   "translate": [
+    { "path": "models/translate/zh-en/decoder.int8.onnx", "size": 92923652, "sha256": "53fea0dbf1f5650d2882e01c24039061a550cdba2e5af4b25d04a6ee85cdbc29" },
+    { "path": "models/translate/zh-en/encoder.int8.onnx", "size": 52761441, "sha256": "b46b334f21610bc7c72680c8994b937493b84728d8798a4d4dd48e6e28c25fe4" },
+    { "path": "models/translate/zh-en/tokenizer.json", "size": 1477262, "sha256": "6307894490de6c8f59f6306d6aa12daf3dd39b8785ee9f3899457f86433ebbf1" },
+    { "path": "vendor/ort/ort.wasm.min.mjs", "size": 50126, "sha256": "219e6a1fc8a9938268d18efca3c91d310bd2f4a59bbd13744df5b2b7fc6cee3b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.mjs", "size": 24381, "sha256": "e13f7f94fc51b4ca72b12faeb1ee95f4ace6dfbc8939bc718aabdc0a27c4299b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.wasm", "size": 14239897, "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2" }
+   ]
+  },
+  "ja": {
+   "read": [
+    { "path": "vendor/kuromoji/kuromoji.js", "size": 307967, "sha256": "ab0ac10f1c4a9b5e246e63e57b04ba14d3a6148cd7e8d62cb97a960d4f85a3e6" },
+    { "path": "vendor/kuromoji/dict/base.dat.gz", "size": 3956825, "sha256": "0803327762e1c93ca731e4319ab8343340f2806bb84941207782cde9d2d5a8eb" },
+    { "path": "vendor/kuromoji/dict/cc.dat.gz", "size": 1692067, "sha256": "02b7631be0d4de3a1a75cd9f9cc51536e4f94c9e6b389b813e06ba0f6e7de765" },
+    { "path": "vendor/kuromoji/dict/check.dat.gz", "size": 3111633, "sha256": "193ae0035fff6fe812b58d9ee730e7a7d7ee601d918481ce51075c58114f6cc9" },
+    { "path": "vendor/kuromoji/dict/tid.dat.gz", "size": 1605820, "sha256": "d43d831cb6fb0f0a411739cd287a6d5e998e121a8daca614df14a81a0dcac586" },
+    { "path": "vendor/kuromoji/dict/tid_map.dat.gz", "size": 1485576, "sha256": "33efd5ffd87a70f669add093fa39dee44341d58f940844ef107c8fd98bb795b2" },
+    { "path": "vendor/kuromoji/dict/tid_pos.dat.gz", "size": 5916009, "sha256": "60dbfc99a6ab993f30c5dab648bec6ad7f9aaefa5c14e1843837d95e509f8895" },
+    { "path": "vendor/kuromoji/dict/unk.dat.gz", "size": 10512, "sha256": "f7f991cdeb9bfd3e9c0e4577cc50ee0815a11c508cccd444a9d3ab3c81521100" },
+    { "path": "vendor/kuromoji/dict/unk_char.dat.gz", "size": 306, "sha256": "9a8e86fd9aff32d323fbb59f5a7006f05927a11f8173c90712cc56293aeb3225" },
+    { "path": "vendor/kuromoji/dict/unk_compat.dat.gz", "size": 338, "sha256": "50f60aa29bc2e86c2903ab8c825bb6fa604d2b294d96941c1d3924259791899d" },
+    { "path": "vendor/kuromoji/dict/unk_invoke.dat.gz", "size": 1140, "sha256": "6b210889548457c3006913afd12c8b525562255f2709e404604be9614a25e94c" },
+    { "path": "vendor/kuromoji/dict/unk_map.dat.gz", "size": 1190, "sha256": "6df12460e5477230bb6fd9641def918b699fc0a8868016b6c9f794488630509b" },
+    { "path": "vendor/kuromoji/dict/unk_pos.dat.gz", "size": 10540, "sha256": "5b183a29f281acc7e0542beca47b83f7985047c0a2d27e78a66f32276be5ad11" }
+   ],
+   "translate": [
+    { "path": "models/translate/ja-en/decoder.int8.onnx", "size": 58918212, "sha256": "717439e4d41034334ebf7b4f11a3d8c962f0188544edd84975fb307abd71c39d" },
+    { "path": "models/translate/ja-en/encoder.int8.onnx", "size": 35840658, "sha256": "355af58d36aae25d7a752f2a1f26e4e1d3762e67762be31f7c6b7e791f0ce42e" },
+    { "path": "models/translate/ja-en/tokenizer.json", "size": 1080290, "sha256": "e9eebdacafeb14676e4248a4daae99998d52e4d72e04b59d20f2b53df3e6ea8e" },
+    { "path": "vendor/ort/ort.wasm.min.mjs", "size": 50126, "sha256": "219e6a1fc8a9938268d18efca3c91d310bd2f4a59bbd13744df5b2b7fc6cee3b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.mjs", "size": 24381, "sha256": "e13f7f94fc51b4ca72b12faeb1ee95f4ace6dfbc8939bc718aabdc0a27c4299b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.wasm", "size": 14239897, "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2" }
+   ]
+  },
+  "ko": {
+   "read": [
+    { "path": "models/rec_ko.int8.onnx", "size": 3579422, "sha256": "9ba81ed4f3be41373e8647149ba9f9fd4a8b2d70813c29bb84ec4948113602b4" },
+    { "path": "models/dict_ko.txt", "size": 47451, "sha256": "a88071c68c01707489baa79ebe0405b7beb5cca229f4fc94cc3ef992328802d7" }
+   ],
+   "translate": [
+    { "path": "models/translate/ko-en/decoder.int8.onnx", "size": 92923653, "sha256": "2812c337a5428f13debfb07235a91aac2d5bb683697cb99887f3c1650b3050af" },
+    { "path": "models/translate/ko-en/encoder.int8.onnx", "size": 52761442, "sha256": "be6facba9b061333081ac5d8094949f5e63da1535b855d83ccbb0f350df979c7" },
+    { "path": "models/translate/ko-en/tokenizer.json", "size": 1562846, "sha256": "39dc4ee1286b0a83bf0897a20d654aec36f5ee27db44c4d07c99190ccd449c0b" },
+    { "path": "vendor/ort/ort.wasm.min.mjs", "size": 50126, "sha256": "219e6a1fc8a9938268d18efca3c91d310bd2f4a59bbd13744df5b2b7fc6cee3b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.mjs", "size": 24381, "sha256": "e13f7f94fc51b4ca72b12faeb1ee95f4ace6dfbc8939bc718aabdc0a27c4299b" },
+    { "path": "vendor/ort/ort-wasm-simd-threaded.wasm", "size": 14239897, "sha256": "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2" }
+   ]
+  }
+ }
+}

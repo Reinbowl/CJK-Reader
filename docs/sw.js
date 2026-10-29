@@ -4,10 +4,11 @@
 // App code is revalidated with the server on every load, so deploys show up without any version
 // bump. Models/vendor files are large and served cache-first: bump ASSETS when they change.
 const SHELL = "cjk-reader-shell-v2";
+// ASSETS also holds the language packs (packs.js, which names it too: keep the two in step).
 const ASSETS = "cjk-reader-v2"; // v2: PP-OCRv6 models
 const SHELL_FILES = [
   "./", "index.html", "style.css", "app.js", "ocr-worker.js", "ocr-core.js", "reading-worker.js", "reading.js",
-  "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png",
+  "packs.js", "packs.json", "marian.js", "marian-worker.js", "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png",
   "vendor/pinyin-pro.js", "vendor/wanakana.min.js",
 ];
 
@@ -62,6 +63,9 @@ async function networkFirst(req) {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== "GET" || url.origin !== location.origin) return;
+  // The pack installer (packs.js) fetches with no-store and caches each file itself once its sha256
+  // checks out.
+  if (e.request.cache === "no-store") return e.respondWith(fetch(e.request).then(isolate));
   const heavy = /\/(models|vendor)\//.test(url.pathname);
   e.respondWith((heavy ? cacheFirst(e.request, e) : networkFirst(e.request)).then(isolate));
 });

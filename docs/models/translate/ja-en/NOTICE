@@ -1,0 +1,2 @@
+FuguMT ja-en by Satoshi Takahashi (staka), https://huggingface.co/staka/fugumt-ja-en, CC BY-SA 4.0.
+ONNX export: https://huggingface.co/Kadonox/fugumt-ja-en-onnx (CC BY-SA 4.0). int8-quantized by tools/prepare_models.py.
