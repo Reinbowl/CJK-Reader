@@ -264,7 +264,12 @@ async function staticScene() {
     `the list's text selects without its pinyin, and nothing else selects (${JSON.stringify(selection)})`);
   await shot(page, "static-still-list");
   await page.tap("#sheet");
-  check(await sheetHidden(), "tapping the list closes it");
+  await page.waitForTimeout(500);
+  check(!(await sheetHidden()), "tapping the list leaves it open");
+  const above = await page.evaluate(() => [195, (document.querySelector("header").getBoundingClientRect().bottom + document.querySelector("#sheet").getBoundingClientRect().top) / 2]);
+  await page.touchscreen.tap(...above);
+  await until(page, () => document.querySelector("#sheet").hidden, null, 2000);
+  check(true, "tapping the picture above it closes it");
   await page.click("#shutter");
   await until(page, () => self.cjkStats.mode === "live");
   check(true, "shutter returns to live");

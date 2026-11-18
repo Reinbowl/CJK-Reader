@@ -75,7 +75,6 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 
 #sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 100px); max-height: 42vh; overflow-y: auto;
   margin: 0 12px; padding: 4px 16px; border-radius: 14px; background: var(--panel); backdrop-filter: blur(8px); }
-#sheet.top { bottom: auto; } /* top: under the header (app.js), clear of a double-tapped line low down */
 #lines { list-style: none; margin: 0; padding: 0; }
 #lines li { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.1); }
 #lines li:last-child { border-bottom: 0; }

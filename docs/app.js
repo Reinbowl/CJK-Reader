@@ -754,9 +754,9 @@ async function translateParagraphs(r, paras) {
 }
 
 function toggleSheet(open = sheet.hidden) {
+  clearTimeout(closeTimer); // a tap on the picture that was about to close it
   sheet.hidden = !open;
   $("#list").setAttribute("aria-pressed", String(open));
-  if (!open) sheetAt("bottom");
   if (!open && lastStill?.focus != null) {
     linesEl.querySelector(".hit")?.classList.remove("hit");
     lastStill.focus = stats.focus = null;
@@ -764,15 +764,8 @@ function toggleSheet(open = sheet.hidden) {
   }
 }
 
-// The list sits above the shutter, or at the top, under the header.
-function sheetAt(side) {
-  sheet.classList.toggle("top", side === "top");
-  sheet.style.top = side === "top" ? `${$("header").offsetHeight}px` : "";
-}
-
 // A line of the frozen frame was double-tapped: the list opens on its paragraph, which flashes, and
-// the line's box stays outlined in yellow while the list is open. The list goes to the top of the
-// screen if that covers less of the line.
+// the line's box stays outlined in yellow while the list is open.
 function showLine(k) {
   const el = linesEl.querySelector(`.ruby[data-line="${k}"]`), li = el?.closest("li");
   if (!li) return;
@@ -780,10 +773,6 @@ function showLine(k) {
   toggleSheet(true);
   lastStill.focus = k;
   redrawStill();
-  const ys = lastStill.plan.boxes[k].map(([, y]) => y * sv.s + sv.ty), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  sheetAt("bottom");
-  const { top, height } = sheet.getBoundingClientRect(), under = $("header").offsetHeight + height;
-  if (y1 > top && Math.min(y1, under) - y0 < y1 - Math.max(y0, top)) sheetAt("top");
   // The paragraph from its top, or from this line if the paragraph is too long to show down to it.
   const from = el.offsetTop + el.offsetHeight - li.offsetTop > sheet.clientHeight ? el.offsetTop : li.offsetTop;
   sheet.scrollTo({ top: from - 4, behavior: wasOpen ? "smooth" : "auto" });
@@ -967,6 +956,7 @@ function setStillView(next) {
 
 const fingers = new Map(); // pointerId -> [x, y]
 let gesture = null, multi = false, lastTap = null; // lastTap: { t, x, y }
+const DOUBLE_TAP = 350; // ms
 const centroid = (pts) => [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
 const spanOf = (pts) => (pts.length > 1 ? Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]) : 0);
 
@@ -1004,16 +994,29 @@ function lift(e) {
   if (mode === "still" && !tap) redrawStill();
   if (tap) {
     const now = performance.now();
-    if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+    if (lastTap && now - lastTap.t < DOUBLE_TAP && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
       lastTap = null;
+      clearTimeout(closeTimer);
       doubleTap(e.clientX, e.clientY);
-    } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+    } else {
+      lastTap = { t: now, x: e.clientX, y: e.clientY };
+      if (!sheet.hidden) closeSoon(e.clientX, e.clientY);
+    }
   }
   gesture = null;
   multi = false;
 }
 view.addEventListener("pointerup", lift);
 view.addEventListener("pointercancel", lift);
+
+// A tap on the picture closes the list (so does the list button; a tap on the list doesn't). A tap on
+// a line waits to see if it's a double-tap, which moves the list to that line instead.
+let closeTimer = 0;
+function closeSoon(x, y) {
+  clearTimeout(closeTimer);
+  if (lineAt(x, y) < 0) toggleSheet(false);
+  else closeTimer = setTimeout(() => toggleSheet(false), DOUBLE_TAP);
+}
 
 // Double-tap: on a line of a frozen frame, its place in the list; anywhere else, back to 1×.
 function doubleTap(x, y) {
@@ -1270,11 +1273,6 @@ async function readStill(src, w, h, fit, keep = false) {
   }
 }
 
-// A tap on the list closes it: one that started there (the click of the double-tap that opened it
-// lands on it too) and didn't clear a selection of its text.
-let closing = false;
-document.addEventListener("pointerdown", (e) => (closing = sheet.contains(e.target) && getSelection().isCollapsed), true);
-sheet.onclick = () => closing && getSelection().isCollapsed && toggleSheet(false);
 $("#list").onclick = () => toggleSheet();
 // Press and hold brings up no menu (style.css also turns off selecting), except on the list's text.
 document.addEventListener("contextmenu", (e) => e.target.closest?.("#lines") || e.preventDefault());

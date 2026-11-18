@@ -11,8 +11,9 @@ after the first visit.
 - **Shutter:** freezes the frame and re-reads it at higher resolution, with the readings drawn over
   it. The list button shows every line with ruby text, one item per paragraph (lines that belong
   together). For Japanese that's romaji over each word, like the camera, and the kana reading under the line.
-  Double-tap a line on the frame to open the list on it. The recognised text can be selected and
-  copied there, without its readings or translation. Elsewhere, press and hold selects nothing.
+  Double-tap a line on the frame to open the list on it. Tap the picture or the list button to close
+  it. The recognised text can be selected and copied there, without its readings or translation.
+  Elsewhere, press and hold selects nothing.
 - **Translation:** with a language's translation pack installed, each paragraph of a frozen frame or
   photo is translated into English and shown under it in the list. Never in live mode. It runs on
   the CPU in its own worker, with small Marian models on ONNX Runtime: OPUS-MT for Chinese and
