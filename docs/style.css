@@ -11,6 +11,11 @@
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; overflow: hidden; background: #000; color: var(--text);
   font: 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-tap-highlight-color: transparent; }
+/* Press and hold selects nothing and brings up no menu (app.js cancels contextmenu too), except the
+   list's recognised text: that can be selected and copied, without its readings or translation. */
+body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
+#lines { -webkit-user-select: text; user-select: text; -webkit-touch-callout: default; }
+#lines rt, #lines .kana, #lines .en { -webkit-user-select: none; user-select: none; }
 button, .btn { font: inherit; color: inherit; cursor: pointer; }
 
 /* touch-action: pinches and drags on the view zoom and pan it (app.js), not the page. */
@@ -70,6 +75,7 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 
 #sheet { position: fixed; left: 0; right: 0; bottom: calc(var(--safe-b) + 100px); max-height: 42vh; overflow-y: auto;
   margin: 0 12px; padding: 4px 16px; border-radius: 14px; background: var(--panel); backdrop-filter: blur(8px); }
+#sheet.top { bottom: auto; } /* top: under the header (app.js), clear of a double-tapped line low down */
 #lines { list-style: none; margin: 0; padding: 0; }
 #lines li { padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,.1); }
 #lines li:last-child { border-bottom: 0; }
@@ -80,6 +86,11 @@ body:not([data-mode="live"]) #zoombar { display: none; }
 .kana { color: var(--muted); font-size: 14px; }
 .en { margin-top: 6px; padding-left: 10px; border-left: 2px solid var(--accent); font-size: 15px; }
 .en.error { color: var(--muted); border-color: var(--muted); }
+/* A line double-tapped on the frozen frame: its paragraph flashes as the list opens on it, and stays
+   tinted while the list is open (its box on the frame is outlined in yellow). */
+#lines li.hit { border-radius: 6px; background: rgba(255,224,102,.1); box-shadow: 0 0 0 8px rgba(255,224,102,.1);
+  animation: hit 1.6s ease-out; }
+@keyframes hit { from { background: rgba(255,224,102,.28); box-shadow: 0 0 0 8px rgba(255,224,102,.28); } }
 
 #start { position: fixed; z-index: 1; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 8px; padding: 24px; text-align: center; background: #0b0b0c; }

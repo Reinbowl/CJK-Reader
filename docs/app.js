@@ -36,8 +36,9 @@ const LABEL_SCALE = 0.45, MAX_LABEL = 28, FADE_FROM = 4, LEGIBLE = 6;
 const MIN_LINE = Number(setting("minline")) || 14;
 const MIN_GAP = 250; // live mode: ms between reads, at least, and at least as long as the last read took
 
-// What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug.
-const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, probes: 0, zoom: null, download: null, translated: 0 });
+// What the app is doing, for the e2e tests (test/e2e.test.mjs) and ?debug. boxes: the frozen frame's
+// line boxes at 1× (screen px); focus: the line double-tapped there and its paragraph in the list.
+const stats = (self.cjkStats = { mode: "idle", backend: "", reads: 0, lines: 0, skipped: 0, recognised: 0, busy: 0, ms: null, gate: null, fast: null, labels: null, reading: 0, cancelled: 0, probes: 0, zoom: null, download: null, translated: 0, boxes: null, focus: null });
 
 // The settings panel (gear): live reading on or off, and which language packs are installed. Chinese
 // reading always is; the rest are downloaded there (packs.js).
@@ -562,7 +563,8 @@ function rowItems(g, size) {
   });
 }
 
-function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
+// focus: a line to outline in yellow (double-tapped, its place shown in the list).
+function paint(plan, scale = { s: 1, tx: 0, ty: 0 }, focus = -1) {
   sizeCanvas(overlay);
   octx.transform(scale.s, 0, 0, scale.s, scale.tx, scale.ty);
   const outline = (pts) => {
@@ -586,6 +588,11 @@ function paint(plan, scale = { s: 1, tx: 0, ty: 0 }) {
   octx.lineWidth = 1.5 / scale.s;
   octx.strokeStyle = "rgba(255,255,255,0.75)";
   plan.boxes.forEach((b, k) => small.has(k) || outline(b));
+  if (plan.boxes[focus]) {
+    octx.lineWidth = 2.5 / scale.s;
+    octx.strokeStyle = "#ffe066";
+    outline(plan.boxes[focus]);
+  }
   // Yellow labels outlined in black, no backing: the characters show between the letters.
   octx.textBaseline = "middle";
   octx.lineJoin = "round";
@@ -658,6 +665,7 @@ function fillSheet(result) {
       const text = document.createElement("div");
       text.className = "ruby";
       text.lang = result.lang;
+      text.dataset.line = i; // showLine() finds a double-tapped line by it
       const ruby = (s, r) => {
         if (!r) return text.append(s);
         const el = document.createElement("ruby");
@@ -748,6 +756,41 @@ async function translateParagraphs(r, paras) {
 function toggleSheet(open = sheet.hidden) {
   sheet.hidden = !open;
   $("#list").setAttribute("aria-pressed", String(open));
+  if (!open) sheetAt("bottom");
+  if (!open && lastStill?.focus != null) {
+    linesEl.querySelector(".hit")?.classList.remove("hit");
+    lastStill.focus = stats.focus = null;
+    if (mode === "still") redrawStill();
+  }
+}
+
+// The list sits above the shutter, or at the top, under the header.
+function sheetAt(side) {
+  sheet.classList.toggle("top", side === "top");
+  sheet.style.top = side === "top" ? `${$("header").offsetHeight}px` : "";
+}
+
+// A line of the frozen frame was double-tapped: the list opens on its paragraph, which flashes, and
+// the line's box stays outlined in yellow while the list is open. The list goes to the top of the
+// screen if that covers less of the line.
+function showLine(k) {
+  const el = linesEl.querySelector(`.ruby[data-line="${k}"]`), li = el?.closest("li");
+  if (!li) return;
+  const wasOpen = !sheet.hidden;
+  toggleSheet(true);
+  lastStill.focus = k;
+  redrawStill();
+  const ys = lastStill.plan.boxes[k].map(([, y]) => y * sv.s + sv.ty), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  sheetAt("bottom");
+  const { top, height } = sheet.getBoundingClientRect(), under = $("header").offsetHeight + height;
+  if (y1 > top && Math.min(y1, under) - y0 < y1 - Math.max(y0, top)) sheetAt("top");
+  // The paragraph from its top, or from this line if the paragraph is too long to show down to it.
+  const from = el.offsetTop + el.offsetHeight - li.offsetTop > sheet.clientHeight ? el.offsetTop : li.offsetTop;
+  sheet.scrollTo({ top: from - 4, behavior: wasOpen ? "smooth" : "auto" });
+  linesEl.querySelector(".hit")?.classList.remove("hit");
+  void li.offsetWidth; // restart the flash
+  li.classList.add("hit");
+  stats.focus = { line: k, para: [...linesEl.children].indexOf(li) };
 }
 
 function setStatus(msg, error = false) {
@@ -909,7 +952,7 @@ function paintStill() {
 function redrawStill() {
   if (!lastStill) return;
   paintStill();
-  if (lastStill.plan) paint(lastStill.plan, sv);
+  if (lastStill.plan) paint(lastStill.plan, sv, lastStill.focus ?? -1);
   stats.zoom = { ...stats.zoom, still: sv.s, pan: [sv.tx, sv.ty] };
 }
 
@@ -923,7 +966,7 @@ function setStillView(next) {
 }
 
 const fingers = new Map(); // pointerId -> [x, y]
-let gesture = null, multi = false, lastTap = 0;
+let gesture = null, multi = false, lastTap = null; // lastTap: { t, x, y }
 const centroid = (pts) => [pts.reduce((a, p) => a + p[0], 0) / pts.length, pts.reduce((a, p) => a + p[1], 0) / pts.length];
 const spanOf = (pts) => (pts.length > 1 ? Math.hypot(pts[0][0] - pts[1][0], pts[0][1] - pts[1][1]) : 0);
 
@@ -961,17 +1004,52 @@ function lift(e) {
   if (mode === "still" && !tap) redrawStill();
   if (tap) {
     const now = performance.now();
-    if (now - lastTap < 350) {
-      lastTap = 0;
-      if (mode === "live") setZoom(1);
-      else if (mode === "still") { sv = { s: 1, tx: 0, ty: 0 }; redrawStill(); }
-    } else lastTap = now;
+    if (lastTap && now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 40) {
+      lastTap = null;
+      doubleTap(e.clientX, e.clientY);
+    } else lastTap = { t: now, x: e.clientX, y: e.clientY };
   }
   gesture = null;
   multi = false;
 }
 view.addEventListener("pointerup", lift);
 view.addEventListener("pointercancel", lift);
+
+// Double-tap: on a line of a frozen frame, its place in the list; anywhere else, back to 1×.
+function doubleTap(x, y) {
+  const k = mode === "still" ? lineAt(x, y) : -1;
+  if (k >= 0) showLine(k);
+  else if (mode === "live") setZoom(1);
+  else if (mode === "still") { sv = { s: 1, tx: 0, ty: 0 }; redrawStill(); }
+}
+
+// The line of a frozen frame's own read under screen point (x, y), or else the nearest within a
+// fingertip (thin lines are hard to hit): its index into the read's lines, or -1.
+function lineAt(x, y) {
+  const plan = lastStill?.result && lastStill.plan;
+  if (!plan) return -1;
+  const px = (x - sv.tx) / sv.s, py = (y - sv.ty) / sv.s; // the plan is laid out at 1×
+  let best = -1, near = 12 / sv.s;
+  plan.boxes.forEach((b, k) => {
+    const d = distance(b, px, py);
+    if (d < near) [best, near] = [k, d];
+  });
+  return best;
+}
+
+// How far point (x, y) is from a convex polygon: 0 inside it.
+function distance(poly, x, y) {
+  let d = Infinity, left = false, right = false;
+  poly.forEach(([x1, y1], i) => {
+    const [x2, y2] = poly[(i + 1) % poly.length], ex = x2 - x1, ey = y2 - y1;
+    const t = Math.max(0, Math.min(1, ((x - x1) * ex + (y - y1) * ey) / (ex * ex + ey * ey || 1)));
+    d = Math.min(d, Math.hypot(x - x1 - t * ex, y - y1 - t * ey));
+    const side = ex * (y - y1) - ey * (x - x1);
+    if (side < 0) left = true;
+    if (side > 0) right = true;
+  });
+  return left && right ? d : 0;
+}
 document.addEventListener("gesturestart", (e) => e.preventDefault()); // Safari's own pinch-zoom of the page
 
 $("#zoom").oninput = (e) => { setZoom(Number(e.target.value)); wakeZoombar(); };
@@ -1173,22 +1251,33 @@ async function readStill(src, w, h, fit, keep = false) {
   redrawStill();
   still.hidden = false;
   setStatus("Reading…");
+  linesEl.innerHTML = "<li class=empty>Reading…</li>"; // not the last frame's lines meanwhile
+  stats.boxes = stats.focus = null;
   try {
     const r = await read(image, STILL_DET);
     if (mode !== "still" || lastStill.src !== src) return;
     lastStill.result = r;
     lastStill.plan = layout(r, map);
+    stats.boxes = lastStill.plan.boxes.map((b) => b.map(([x, y]) => [Math.round(x), Math.round(y)]));
     redrawStill(); // at whatever zoom the fingers have reached meanwhile
     stats.translated = 0;
     setStatus(timing(r));
     translateParagraphs(r, fillSheet(r));
   } catch (e) {
-    if (!e.cancelled) setStatus(e, true); // cancelled: a newer still read took over
+    if (e.cancelled) return; // a newer still read took over
+    setStatus(e, true);
+    if (lastStill.src === src) linesEl.innerHTML = "<li class=empty>The read failed: see the message at the top.</li>";
   }
 }
 
-sheet.onclick = () => toggleSheet(false);
+// A tap on the list closes it: one that started there (the click of the double-tap that opened it
+// lands on it too) and didn't clear a selection of its text.
+let closing = false;
+document.addEventListener("pointerdown", (e) => (closing = sheet.contains(e.target) && getSelection().isCollapsed), true);
+sheet.onclick = () => closing && getSelection().isCollapsed && toggleSheet(false);
 $("#list").onclick = () => toggleSheet();
+// Press and hold brings up no menu (style.css also turns off selecting), except on the list's text.
+document.addEventListener("contextmenu", (e) => e.target.closest?.("#lines") || e.preventDefault());
 
 let snapping = false;
 $("#shutter").onclick = async () => {

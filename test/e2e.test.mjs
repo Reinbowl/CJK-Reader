@@ -250,6 +250,18 @@ async function staticScene() {
   check(!(await sheetHidden()), "list button opens the list");
   const roman = await page.evaluate(() => document.querySelectorAll("#lines .kana").length);
   check(roman === 0, "the Chinese list shows pinyin only as ruby, not again underneath");
+  // Selecting the whole list gets the recognised text and not its pinyin; elsewhere nothing selects.
+  const selection = await page.evaluate(() => {
+    const r = document.createRange();
+    r.selectNodeContents(document.querySelector("#lines"));
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+    const text = getSelection().toString();
+    getSelection().removeAllRanges();
+    return { text, elsewhere: ["#status", "#shutter", ".langs button"].map((s) => getComputedStyle(document.querySelector(s)).userSelect) };
+  });
+  check(selection.text.replace(/\s/g, "") === listed.join("").replace(/\s/g, "") && selection.elsewhere.every((u) => u === "none"),
+    `the list's text selects without its pinyin, and nothing else selects (${JSON.stringify(selection)})`);
   await shot(page, "static-still-list");
   await page.tap("#sheet");
   check(await sheetHidden(), "tapping the list closes it");
@@ -512,7 +524,19 @@ async function zoomScene() {
   console.log("-- zoom: slider and pinch live, pinch and pan the frozen frame, double-tap resets");
   const { browser, page, errors } = await open(clips.calendar);
   const { touch, pinch } = await fingers(page);
-  const doubleTap = async () => { await page.touchscreen.tap(195, 420); await page.touchscreen.tap(195, 420); };
+  const doubleTap = async (x = 195, y = 420) => { await page.touchscreen.tap(x, y); await page.touchscreen.tap(x, y); };
+  // A spot of the frozen frame clear of every line at its zoom and pan: double-tapping a line opens
+  // the list instead.
+  const between = () => page.evaluate(() => {
+    const { boxes, zoom: { still: s, pan: [tx, ty] } } = self.cjkStats;
+    const top = document.querySelector("header").getBoundingClientRect().bottom + 20, bottom = document.querySelector("footer").getBoundingClientRect().top - 20;
+    const clear = (x, y) => boxes.every((b) => {
+      const xs = b.map((p) => p[0] * s + tx), ys = b.map((p) => p[1] * s + ty);
+      return x < Math.min(...xs) - 20 || x > Math.max(...xs) + 20 || y < Math.min(...ys) - 20 || y > Math.max(...ys) + 20;
+    });
+    for (let y = top; y < bottom; y += 8) for (let x = 20; x < innerWidth - 20; x += 8) if (clear(x, y)) return [x, y];
+    return null;
+  });
   await startLive(page);
   const one = await stats(page);
 
@@ -566,7 +590,9 @@ async function zoomScene() {
   await touch("touchEnd", []);
   await until(page, (x) => self.cjkStats.zoom.pan[0] !== x, zs.zoom.pan[0]);
   check(true, "dragging pans the zoomed frame");
-  await doubleTap();
+  const spot = await between();
+  check(!!spot, `there's a spot clear of the lines to double-tap (${spot})`);
+  await doubleTap(...spot);
   await until(page, () => self.cjkStats.zoom.still === 1);
   check(true, "double-tap resets the still zoom");
   check(!errors.length, `no page errors${errors.length ? `: ${errors.join(" | ")}` : ""}`);
@@ -689,6 +715,25 @@ async function settingsScene() {
   }));
   console.log(`    menu: ${menu.lines} lines, ${menu.items} items: ${menu.en.slice(0, 6).join(" | ")} …`);
   check(menu.lines >= 20 && menu.items === menu.lines && menu.translated === menu.lines, "a menu is translated a line at a time, not as one run-on paragraph");
+  // Double-tap a line low on the menu: the list opens on its paragraph, scrolled down to it.
+  const target = await page.evaluate(() => {
+    const top = document.querySelector("header").getBoundingClientRect().bottom + 10, bottom = document.querySelector("footer").getBoundingClientRect().top - 10;
+    const centre = (b) => [b.reduce((a, p) => a + p[0], 0) / b.length, b.reduce((a, p) => a + p[1], 0) / b.length];
+    return self.cjkStats.boxes.map((b, k) => [k, ...centre(b)]).filter(([, x, y]) => y > top && y < bottom && x > 10 && x < innerWidth - 10).sort((a, b) => b[2] - a[2])[0];
+  });
+  await page.touchscreen.tap(target[1], target[2]);
+  await page.touchscreen.tap(target[1], target[2]);
+  await until(page, () => !document.querySelector("#sheet").hidden);
+  const shown = await page.evaluate((k) => {
+    const sheet = document.querySelector("#sheet"), el = document.querySelector(`#lines .ruby[data-line="${k}"]`);
+    const s = sheet.getBoundingClientRect(), r = el.getBoundingClientRect();
+    return { focus: self.cjkStats.focus, para: [...document.querySelectorAll("#lines li")].indexOf(el.closest("li")), scrolled: sheet.scrollTop, inView: r.top >= s.top - 1 && r.bottom <= s.bottom + 1 };
+  }, target[0]);
+  console.log(`    double-tapped line ${target[0]}: ${JSON.stringify(shown)}`);
+  check(shown.focus?.line === target[0] && shown.focus.para === shown.para && shown.scrolled > 0 && shown.inView, "double-tapping a line opens the list scrolled to its paragraph");
+  await shot(page, "menu-line");
+  await page.tap("#list");
+  check((await stats(page)).focus === null, "closing the list lets go of the line");
 
   // Japanese translates with FuguMT on onnxruntime (marian-worker.js).
   await page.click("#gear");

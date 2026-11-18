@@ -67,7 +67,8 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Still zoom: `sv` (screen = `sv.s` × base + `sv.t`). `setStillView()` repaints on the next animation frame: `paintStill()` draws the image from its source, and `paint(lastStill.plan, sv)` draws the labels. No CSS stretching: a stretched canvas only covers the area it was drawn for.
   - `lastStill.plan` is computed once per read with `layout()`. Until the still's read is done, it's the last live plan (`livePlan`). Zooming never redoes the layout: rows stay put, and `paint()` works out each row's size for the zoom (`rowSize()`, see Labels).
   - `sizeCanvas()` only reallocates a canvas when its size changes, because frames repaint during a pinch.
-  - Gestures are pointer events on `#view` (`touch-action: none`, Safari `gesturestart` cancelled). Double-tap resets.
+  - Gestures are pointer events on `#view` (`touch-action: none`, Safari `gesturestart` cancelled). Double-tap resets, except on a frozen frame's line.
+  - Double-tapping a line: `lineAt()` hit-tests the plan's boxes (within 12 screen px). `showLine()` then opens the list on that line's paragraph (`.ruby[data-line]`), scrolls to it and tints it (`.hit`). It also outlines the box in yellow (`paint()`'s `focus`) and moves the list to the top (`sheetAt()`) if the list would cover the line at the bottom. The tap's own `click` lands on the list it just opened, so the list only closes on a tap that started on it. The e2e `settings` scene checks this on the menu. `cjkStats.boxes` gives the test the frozen frame's boxes, and `zoom` double-taps between them to reset.
   - `layout()` skips lines entirely off screen and only shifts a row back on screen when its line's centre is on screen.
   - The e2e `zoom` scene drives multi-touch through CDP `Input.dispatchTouchEvent`.
 - **Downloads:**
@@ -85,6 +86,7 @@ app.js (main thread) ──rpc──► ocr-worker.js (module worker) → ocr-co
   - Vertical lines get furigana-style labels to the right.
   - `layout()` returns a plan (box outlines, and per row its labels' positions plus what `rowItems()` needs to redo them). `paint()` draws a plan through a transform, and `draw()` = both, for live mode.
   - `cjkStats.labels` is what the e2e checks read: lines, labels, crowded, below, overlaps, `shrink` (smallest row size / size before placing), `deepest` (most of a line a row covers), hidden at this zoom, `drift` (furthest a label sits from its characters) and min/max size, the last two in on-screen px.
+- **Selection:** `body` is `user-select: none` with `-webkit-touch-callout: none`, and `contextmenu` is cancelled, so press-and-hold selects nothing and opens no menu. The exception is `#lines`, where only the recognised text can be selected: its `rt`, `.kana` and `.en` are `user-select: none`, and both Chromium and WebKit leave them out of the selection's text. The e2e `static` scene checks this.
 - **Settings (`#settings`, the gear):** `localStorage.settings` = `{live, packs: {zh|ja|ko: {read, translate}}}`. `zh.read` is always on. Test builds of the branch had a `zh.lite` translator; a saved `lite` turns `translate` on and is dropped.
   - `live` off: `live()` runs the camera without `startGate()`/`liveLoop()`; the shutter reads as usual.
   - The language bar hides languages whose `read` pack is off. A launch with no saved settings counts the language in use as installed (users from before packs).
